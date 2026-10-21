@@ -22,7 +22,7 @@ import (
 	"github.com/esdras-schonevald/open-warden/internal/warden"
 )
 
-var version = "0.1.1"
+var version = "0.1.2"
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -120,6 +120,7 @@ func parseRunFlags(fs *flag.FlagSet) *runFlags {
 func cmdRun(args []string, multi bool) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
+	fs.Usage = usageText
 	rf := parseRunFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -308,6 +309,7 @@ func loadConfig(path, model string, budget float64) (*config.Config, error) {
 
 func cmdReport(args []string) int {
 	fs := flag.NewFlagSet("report", flag.ContinueOnError)
+	fs.Usage = usageText
 	var cfgPath, statePath string
 	var asJSON bool
 	var last int
@@ -389,6 +391,7 @@ func short(id string) string {
 
 func cmdValidate(args []string) int {
 	fs := flag.NewFlagSet("validate", flag.ContinueOnError)
+	fs.Usage = usageText
 	var cfgPath string
 	fs.StringVar(&cfgPath, "config", "", "configuration file")
 	fs.StringVar(&cfgPath, "c", "", "configuration file")

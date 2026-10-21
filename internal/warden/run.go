@@ -266,9 +266,16 @@ func (r *Runner) Run(ctx context.Context, opts Options) (*report.Run, error) {
 		rep.Model = model
 		currentModel = model
 
+		subModel, exhausted := r.chooseSubagentModel(model, r.Cfg.Run.OutputHeadroom)
+		if exhausted != "" {
+			rep.Fallbacks = append(rep.Fallbacks, report.FallbackEvent{
+				At: time.Now().UTC(), From: exhausted, To: subModel,
+				Reason: string(engine.ErrRateLimit), Scope: "subagents",
+			})
+		}
 		pol := engine.SubagentPolicy{
 			Enabled:     r.subagentEnabled(),
-			Model:       r.subagentModel(model),
+			Model:       subModel,
 			Instruction: r.subagentInstruction(),
 		}
 		env, cleanup, err := engine.PrepareSubagents(pol)
@@ -441,6 +448,21 @@ func (r *Runner) subagentModel(mainModel string) string {
 		return r.Cfg.Subagents.FallbackModel
 	}
 	return base
+}
+
+// chooseSubagentModel applies the subagent fallback proactively when the
+// configured subagent model has no room in its windows. It returns the chosen
+// model and, when a fallback happened, the model it replaced.
+func (r *Runner) chooseSubagentModel(mainModel string, est int) (string, string) {
+	base := r.subagentModel(mainModel)
+	fb := r.Cfg.Subagents.FallbackModel
+	if base == "" || fb == "" || base == fb {
+		return base, ""
+	}
+	if !r.Lim.Admit(base, est).Allowed {
+		return fb, base
+	}
+	return base, ""
 }
 
 func (r *Runner) subagentEnabled() bool {

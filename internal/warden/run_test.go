@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/esdras-schonevald/open-warden/internal/config"
+	"github.com/esdras-schonevald/open-warden/internal/limiter"
 	"github.com/esdras-schonevald/open-warden/internal/usage"
 )
 
@@ -175,6 +176,26 @@ func TestChainOrderAndFallback(t *testing.T) {
 	want := []string{"primary", "agent-fallback", "f1", "f2"}
 	if strings.Join(chain, ",") != strings.Join(want, ",") {
 		t.Fatalf("chain=%v", chain)
+	}
+}
+
+func TestSubagentFallbackWhenExhausted(t *testing.T) {
+	cfg := &config.Config{
+		Model: "primary",
+		Limits: &config.Limits{Models: map[string]*config.Limits{
+			"sub-primary": {RPM: 1},
+		}},
+		Subagents: config.Subagents{Model: "sub-primary", FallbackModel: "sub-fallback"},
+	}
+	lim := limiter.New(cfg.Limits, nil)
+	lim.Consume("sub-primary", 10)
+	r := &Runner{Cfg: cfg, Lim: lim}
+	got, exhausted := r.chooseSubagentModel("primary", 100)
+	if got != "sub-fallback" || exhausted != "sub-primary" {
+		t.Fatalf("got=%s exhausted=%s", got, exhausted)
+	}
+	if got, _ := r.chooseSubagentModel("primary", 100); got == "" {
+		t.Fatal("fallback model must be returned")
 	}
 }
 

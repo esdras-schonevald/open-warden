@@ -182,7 +182,9 @@ selected immediately** — no 429, no wait. When every model is blocked:
 - `false` fails fast with a `rate_limit` error.
 
 Actual token usage is reconciled into the windows after the run, so estimates
-never drift for long.
+never drift for long. Subagent tokens are counted in the report and in the
+budget; TPM windows track dispatches made by warden, while subagent model
+fallback uses its own proactive admission check (`subagents.fallback_model`).
 
 ## Fallbacks
 
