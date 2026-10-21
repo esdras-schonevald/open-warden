@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -50,11 +51,15 @@ func TestBuildArgs(t *testing.T) {
 }
 
 func TestPrepareSubagents(t *testing.T) {
-	env, err := PrepareSubagents(SubagentPolicy{Enabled: true, Model: "p/sub", Instruction: "be brief"})
+	env, cleanup, err := PrepareSubagents(SubagentPolicy{Enabled: true, Model: "p/sub", Instruction: "be brief"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer cleanup()
 	if len(env) != 1 || !strings.HasPrefix(env[0], "ENGINE_CONFIG=") {
 		t.Fatalf("unexpected env: %v", env)
+	}
+	if _, err := os.Stat(strings.TrimPrefix(env[0], "ENGINE_CONFIG=")); err != nil {
+		t.Fatalf("config file missing: %v", err)
 	}
 }

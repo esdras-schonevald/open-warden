@@ -245,6 +245,30 @@ Subagent consumption is collected by walking the session tree, so delegated
 work is never invisible. History is persisted in the state file and available
 via `open-warden report` (or `report --json`).
 
+## Integrating with an orchestrator
+
+Any scheduler that used to spawn a raw agent CLI can shell out to warden and
+consume machine-readable results:
+
+```bash
+open-warden run \
+  -c /workspace/warden.yaml \
+  --agent coder \
+  --workdir /workspace/.worktrees/coder \
+  --budget 2.00 \
+  --json \
+  --prompt-file /tmp/task.md
+```
+
+The JSON document contains `status`, `model`, `fallback_events`, `usage`
+(main/subagents/total and per model) and the final `output` — enough to feed an
+external ledger without parsing logs. Exit code `3` means the budget ceiling
+was reached, `1` means failure, `0` success.
+
+This one-process-per-item model maps directly onto watcher-style
+orchestrators: unique sessions, isolated workdirs, proactive limits shared
+through the state volume, and no engine details to scrape.
+
 ## Security notes
 
 - The container runs with the mounted workspace as its working directory and

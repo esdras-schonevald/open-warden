@@ -132,11 +132,12 @@ func readRandom(b []byte) (int, error) {
 var agentNames = []string{"explore", "general", "plan"}
 
 // PrepareSubagents writes a scoped config assigning models/instructions to
-// subagents and returns env vars to apply. When policy is disabled or empty,
-// nothing is generated.
-func PrepareSubagents(pol SubagentPolicy) ([]string, error) {
+// subagents and returns env vars plus a cleanup function. When policy is
+// disabled or empty, nothing is generated.
+func PrepareSubagents(pol SubagentPolicy) ([]string, func(), error) {
+	noop := func() {}
 	if !pol.Enabled || (pol.Model == "" && pol.Instruction == "") {
-		return nil, nil
+		return nil, noop, nil
 	}
 	type agentDef struct {
 		Model  string `json:"model,omitempty"`
@@ -156,17 +157,18 @@ func PrepareSubagents(pol SubagentPolicy) ([]string, error) {
 	cfg := map[string]any{"agent": agents}
 	raw, err := json.Marshal(cfg)
 	if err != nil {
-		return nil, err
+		return nil, noop, err
 	}
 	dir, err := os.MkdirTemp("", "warden-cfg-*")
 	if err != nil {
-		return nil, err
+		return nil, noop, err
 	}
 	path := filepath.Join(dir, "engine.json")
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
-		return nil, err
+		os.RemoveAll(dir)
+		return nil, noop, err
 	}
-	return []string{"ENGINE_CONFIG=" + path}, nil
+	return []string{"ENGINE_CONFIG=" + path}, func() { os.RemoveAll(dir) }, nil
 }
 
 // Run executes one run against the engine, streaming events to onEvent.

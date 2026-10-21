@@ -271,7 +271,7 @@ func (r *Runner) Run(ctx context.Context, opts Options) (*report.Run, error) {
 			Model:       r.subagentModel(model),
 			Instruction: r.subagentInstruction(),
 		}
-		env, err := engine.PrepareSubagents(pol)
+		env, cleanup, err := engine.PrepareSubagents(pol)
 		if err != nil {
 			return nil, fmt.Errorf("prepare subagent policy: %w", err)
 		}
@@ -313,6 +313,7 @@ func (r *Runner) Run(ctx context.Context, opts Options) (*report.Run, error) {
 			fmt.Fprint(r.Out, engine.Sanitize(ev.Part.Text))
 		})
 		cancel()
+		cleanup()
 		rep.Output = engine.Sanitize(text.String())
 		if res != nil && res.SessionID != "" {
 			set.Set(slot, res.SessionID)
