@@ -27,7 +27,7 @@ import (
 	"github.com/esdras-schonevald/open-warden/internal/warden"
 )
 
-var version = "0.3.0"
+var version = "0.3.1"
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -215,6 +215,15 @@ func cmdRun(args []string, multi bool) int {
 		runner.Custom = &warden.CustomRun{BaseURL: rf.baseURL, Model: model, APIKey: apiKey}
 	} else if apiKey != "" {
 		runner.APIKey = apiKey
+		selected := rf.model
+		if selected == "" {
+			selected = cfg.Model
+		}
+		if m, ok := registry.Resolve(selected); ok {
+			runner.APIKeyProvider = m.Provider
+		} else if i := strings.Index(selected, "/"); i > 0 {
+			runner.APIKeyProvider = selected[:i]
+		}
 	}
 
 	providers := map[string]registry.Provider{}

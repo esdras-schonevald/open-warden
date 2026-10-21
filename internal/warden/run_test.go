@@ -262,3 +262,16 @@ func TestChainResolvesAliases(t *testing.T) {
 		t.Fatalf("alias chain wrong: %v", chain)
 	}
 }
+
+func TestAPIKeyScopedToSelectedProvider(t *testing.T) {
+	r := &Runner{APIKey: "secret", APIKeyProvider: "siliconflow"}
+	if env, val := r.apiKeyEnv("siliconflow/Qwen/Qwen3-Coder-30B-A3B-Instruct"); env != "SILICONFLOW_API_KEY" || val != "secret" {
+		t.Fatalf("primary key env: %q %q", env, val)
+	}
+	if env, _ := r.apiKeyEnv("deepseek/deepseek-flash"); env != "" {
+		t.Fatalf("fallback provider must not receive the key: %q", env)
+	}
+	if env, _ := r.apiKeyEnv("opencode/glm-5.3-flash-free"); env != "" {
+		t.Fatalf("free tier must not receive the key: %q", env)
+	}
+}

@@ -46,8 +46,9 @@ type Runner struct {
 	GatewayToken string
 	// Custom is a one-off provider supplied with --base-url/--api-key.
 	Custom *CustomRun
-	// APIKey overrides the credential of the selected model's provider.
-	APIKey string
+	// APIKey overrides the credential of the selected model's provider only.
+	APIKey         string
+	APIKeyProvider string
 }
 
 // CustomRun describes an ephemeral OpenAI-compatible provider.
@@ -335,10 +336,8 @@ func (r *Runner) Run(ctx context.Context, opts Options) (*report.Run, error) {
 		extraEnv := env
 		if r.Custom != nil {
 			extraEnv = append(extraEnv, "WARDEN_CUSTOM_API_KEY="+r.Custom.APIKey)
-		} else if r.APIKey != "" {
-			if p, ok := registry.ProviderForRef(model); ok && len(p.Env) > 0 {
-				extraEnv = append(extraEnv, p.Env[0]+"="+r.APIKey)
-			}
+		} else if name, value := r.apiKeyEnv(model); name != "" {
+			extraEnv = append(extraEnv, name+"="+value)
 		}
 		var text strings.Builder
 		res, class := engine.Run(runCtx, engine.Options{
@@ -470,6 +469,20 @@ func (r *Runner) Run(ctx context.Context, opts Options) (*report.Run, error) {
 
 // routed reports whether the model belongs to a provider handled by the
 // local request gateway. The managed free tier is the only direct exception.
+// apiKeyEnv returns the credential override for a model, but only when the
+// model belongs to the provider explicitly selected by the caller. Fallback
+// providers never receive another provider's key.
+func (r *Runner) apiKeyEnv(model string) (string, string) {
+	if r.APIKey == "" {
+		return "", ""
+	}
+	p, ok := registry.ProviderForRef(model)
+	if !ok || p.ID != r.APIKeyProvider || len(p.Env) == 0 {
+		return "", ""
+	}
+	return p.Env[0], r.APIKey
+}
+
 func (r *Runner) routed(model string) bool {
 	if r.GatewayURL == "" {
 		return false
