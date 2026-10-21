@@ -56,10 +56,10 @@ func TestPrepareSubagents(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cleanup()
-	if len(env) != 1 || !strings.HasPrefix(env[0], "ENGINE_CONFIG=") {
+	if len(env) != 1 || !strings.HasPrefix(env[0], "OPENCODE_CONFIG=") {
 		t.Fatalf("unexpected env: %v", env)
 	}
-	if _, err := os.Stat(strings.TrimPrefix(env[0], "ENGINE_CONFIG=")); err != nil {
+	if _, err := os.Stat(strings.TrimPrefix(env[0], "OPENCODE_CONFIG=")); err != nil {
 		t.Fatalf("config file missing: %v", err)
 	}
 }

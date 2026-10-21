@@ -12,6 +12,47 @@ fallbacks:
   - opencode/glm-5.3-flash-free
   - deepseek/deepseek-flash
 
+# Upstreams that warden proxies through its local request gateway. Only
+# OpenAI-compatible providers belong here; the embedded engine's own free
+# provider must stay direct (it requires client attestation).
+providers:
+  siliconflow:
+    upstream: https://api.siliconflow.com/v1
+    env: [SILICONFLOW_API_KEY]
+  deepseek:
+    upstream: https://api.deepseek.com
+    env: [DEEPSEEK_API_KEY]
+
+# The gateway is what puts warden in the request path: RPM/TPM/RPD/TPD are
+# checked per request, before the provider is called.
+gateway:
+  enabled: true
+  max_wait: 20s
+
+# Public model catalog. Consumers see alias/label/context/price only; the
+# underlying model id stays internal. Aliases are accepted by `run -m`.
+catalog:
+  - alias: qwen-coder-30b
+    label: Qwen3 Coder 30B
+    model: siliconflow/Qwen/Qwen3-Coder-30B-A3B-Instruct
+    context: 262144
+    pricing: {input: 0.07, output: 0.28}
+  - alias: glm-5.3-flash
+    label: GLM-5.3 Flash
+    model: siliconflow/zai-org/GLM-5.3-Flash
+    context: 200000
+    pricing: {input: 0.15, output: 0.50}
+  - alias: deepseek-flash
+    label: DeepSeek Flash
+    model: deepseek/deepseek-flash
+    context: 128000
+    pricing: {input: 0.15, output: 0.60}
+  - alias: free-glm
+    label: GLM-5.3 Flash (free tier)
+    model: opencode/glm-5.3-flash-free
+    context: 200000
+    pricing: {input: 0, output: 0}
+
 # Hard cost ceiling per run, in USD. The run is interrupted when reached.
 # 0 disables the ceiling.
 budget: 2.00

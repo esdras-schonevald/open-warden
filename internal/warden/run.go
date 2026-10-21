@@ -40,6 +40,9 @@ type Runner struct {
 	Out   io.Writer
 	// Collect reads usage for a session tree; injectable for tests.
 	Collect func(root string, since time.Time) (*usage.Report, error)
+	// GatewayURL and GatewayToken point the engine at warden's local proxy.
+	GatewayURL   string
+	GatewayToken string
 }
 
 // New builds a runner from config, loading persistent state.
@@ -132,11 +135,11 @@ func (r *Runner) composePrompt(agent string, task string) (string, error) {
 
 // chain returns the ordered models to attempt, honoring per-agent override.
 func (r *Runner) chain(opts Options, spec config.AgentSpec) []string {
-	primary := firstNonEmpty(opts.Model, spec.Model, r.Cfg.Model)
+	primary := r.Cfg.ResolveModel(firstNonEmpty(opts.Model, spec.Model, r.Cfg.Model))
 	var chain []string
 	seen := map[string]bool{}
 	add := func(m string) {
-		m = strings.TrimSpace(m)
+		m = r.Cfg.ResolveModel(strings.TrimSpace(m))
 		if m != "" && !seen[m] {
 			seen[m] = true
 			chain = append(chain, m)
@@ -262,7 +265,13 @@ func (r *Runner) Run(ctx context.Context, opts Options) (*report.Run, error) {
 				})
 			}
 		}
-		reservedAt := r.Lim.Consume(model, est)
+		routed := r.routed(model)
+		var reservedAt time.Time
+		if !routed {
+			// direct providers are accounted at run level; gateway-routed
+			// providers are accounted per request by the proxy
+			reservedAt = r.Lim.Consume(model, est)
+		}
 		rep.Model = model
 		currentModel = model
 
@@ -278,9 +287,12 @@ func (r *Runner) Run(ctx context.Context, opts Options) (*report.Run, error) {
 			Model:       subModel,
 			Instruction: r.subagentInstruction(),
 		}
-		env, cleanup, err := engine.PrepareSubagents(pol)
+		env, cleanup, err := engine.PrepareConfig(engine.ConfigOptions{
+			Subagents: pol,
+			Providers: r.providerOverrides(),
+		})
 		if err != nil {
-			return nil, fmt.Errorf("prepare subagent policy: %w", err)
+			return nil, fmt.Errorf("prepare engine config: %w", err)
 		}
 		sessionID := engine.NewSessionID()
 		slot := set.Add(sessionID)
@@ -301,7 +313,7 @@ func (r *Runner) Run(ctx context.Context, opts Options) (*report.Run, error) {
 			SessionID:   sessionID,
 			Prompt:      prompt,
 			AutoApprove: r.Cfg.Run.Auto(),
-			Standalone:  r.Cfg.Standalone,
+			Standalone:  r.Cfg.Standalone || r.GatewayURL != "",
 			Subagents:   pol,
 			ExtraEnv:    env,
 		}, func(ev engine.Event) {
@@ -327,10 +339,12 @@ func (r *Runner) Run(ctx context.Context, opts Options) (*report.Run, error) {
 			rep.ID = res.SessionID
 		}
 		// reconcile the TPM estimate with what the request actually consumed
-		if actual, aerr := r.Collect(set.Get()[slot], rep.Started); aerr == nil && actual != nil {
-			used := actual.Total.Input + actual.Total.Output +
-				actual.Total.Reasoning + actual.Total.CacheRead
-			r.Lim.Adjust(model, reservedAt, used)
+		if !routed {
+			if actual, aerr := r.Collect(set.Get()[slot], rep.Started); aerr == nil && actual != nil {
+				used := actual.Total.Input + actual.Total.Output +
+					actual.Total.Reasoning + actual.Total.CacheRead
+				r.Lim.Adjust(model, reservedAt, used)
+			}
 		}
 		if budgetHit() {
 			rep.BudgetExceeded = true
@@ -419,6 +433,30 @@ func (r *Runner) Run(ctx context.Context, opts Options) (*report.Run, error) {
 	return rep, nil
 }
 
+// routed reports whether the model belongs to a provider handled by the
+// local request gateway.
+func (r *Runner) routed(model string) bool {
+	if r.GatewayURL == "" {
+		return false
+	}
+	_, ok := r.Cfg.ProviderFor(model)
+	return ok
+}
+
+func (r *Runner) providerOverrides() map[string]engine.ProviderOverride {
+	if r.GatewayURL == "" || len(r.Cfg.Providers) == 0 {
+		return nil
+	}
+	out := make(map[string]engine.ProviderOverride, len(r.Cfg.Providers))
+	for id := range r.Cfg.Providers {
+		out[id] = engine.ProviderOverride{
+			BaseURL: r.GatewayURL + "/" + id + "/v1",
+			Headers: map[string]string{"x-warden-gateway": r.GatewayToken},
+		}
+	}
+	return out
+}
+
 func statusWithFallback(s string) string {
 	if s == "ok" {
 		return "ok_with_fallback"
@@ -440,12 +478,13 @@ func (r *Runner) shouldFallback(class engine.ErrClass) bool {
 
 func (r *Runner) subagentModel(mainModel string) string {
 	base := r.Cfg.Subagents.Model
+	base = r.Cfg.ResolveModel(base)
 	if base == "" {
 		base = mainModel
 	}
 	// when the main model had to fall back, move subagents as well
 	if mainModel != "" && mainModel != r.Cfg.Model && r.Cfg.Subagents.FallbackModel != "" {
-		return r.Cfg.Subagents.FallbackModel
+		return r.Cfg.ResolveModel(r.Cfg.Subagents.FallbackModel)
 	}
 	return base
 }

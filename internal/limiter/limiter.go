@@ -7,6 +7,7 @@ package limiter
 
 import (
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,7 +33,15 @@ func New(limits *config.Limits, windows map[string]*state.ModelWindow) *Limiter 
 	return &Limiter{limits: limits, windows: windows}
 }
 
+func normalize(model string) string {
+	if i := strings.Index(model, "#"); i >= 0 {
+		return model[:i]
+	}
+	return model
+}
+
 func (l *Limiter) window(model string) *state.ModelWindow {
+	model = normalize(model)
 	w, ok := l.windows[model]
 	if !ok {
 		w = &state.ModelWindow{}
@@ -136,6 +145,7 @@ type Admission struct {
 func (l *Limiter) Admit(model string, estTokens int) Admission {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	model = normalize(model)
 	now := time.Now()
 	lm := l.limits.For(model)
 	w := l.window(model)
@@ -180,6 +190,7 @@ func (l *Limiter) EarliestWait(models []string, estTokens int) time.Duration {
 func (l *Limiter) Consume(model string, estTokens int) time.Time {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	model = normalize(model)
 	now := time.Now()
 	w := l.window(model)
 	reqs, toks := prune(w, now)
@@ -198,6 +209,7 @@ func (l *Limiter) Adjust(model string, at time.Time, actualTokens int) {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	model = normalize(model)
 	now := time.Now()
 	w := l.window(model)
 	reqs, toks := prune(w, now)

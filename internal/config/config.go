@@ -31,7 +31,15 @@ type Limits struct {
 // For returns the effective limits for a model (model-specific overrides global).
 func (l *Limits) For(model string) Limits {
 	out := Limits{RPM: l.RPM, TPM: l.TPM, RPD: l.RPD, TPD: l.TPD}
-	if m, ok := l.Models[model]; ok && m != nil {
+	key := model
+	if i := strings.Index(key, "#"); i >= 0 {
+		key = key[:i]
+	}
+	m, ok := l.Models[key]
+	if !ok {
+		m, ok = l.Models[model]
+	}
+	if ok && m != nil {
 		if m.RPM > 0 {
 			out.RPM = m.RPM
 		}
@@ -84,6 +92,29 @@ const (
 	TriggerUnavailable FallbackTrigger = "unavailable"
 )
 
+// Provider describes an upstream provider that warden can route through its
+// local request gateway.
+type Provider struct {
+	Upstream string   `yaml:"upstream"`
+	Env      []string `yaml:"env"`
+}
+
+// GatewayOptions controls the local request gateway.
+type GatewayOptions struct {
+	Enabled *bool         `yaml:"enabled"`
+	MaxWait time.Duration `yaml:"max_wait"`
+}
+
+// CatalogEntry is a model exposed to consumers under a stable alias. The
+// underlying engine model id stays internal.
+type CatalogEntry struct {
+	Alias   string   `yaml:"alias"`
+	Label   string   `yaml:"label"`
+	Model   string   `yaml:"model"`
+	Context int      `yaml:"context"`
+	Pricing *Pricing `yaml:"pricing"`
+}
+
 // Subagents defines the subagent policy surfaced to the engine.
 type Subagents struct {
 	Model           string `yaml:"model"`
@@ -113,20 +144,23 @@ func (r RunOptions) Auto() bool { return r.AutoApprove == nil || *r.AutoApprove 
 
 // Config is the top-level warden configuration.
 type Config struct {
-	EngineBin   string             `yaml:"engine_bin"`
-	Standalone  bool               `yaml:"standalone"`
-	Model       string             `yaml:"model"`
-	Fallbacks   []string           `yaml:"fallbacks"`
-	Limits      *Limits            `yaml:"limits"`
-	Pricing     map[string]Pricing `yaml:"pricing"`
-	Budget      float64            `yaml:"budget"`
-	MaxParallel int                `yaml:"max_parallel"`
-	Fallback    FallbackPolicy     `yaml:"fallback"`
-	Prompt      Prompt             `yaml:"prompt"`
-	Subagents   Subagents          `yaml:"subagents"`
-	Run         RunOptions         `yaml:"run"`
-	StateFile   string             `yaml:"state_file"`
-	Instruction string             `yaml:"-"`
+	EngineBin   string              `yaml:"engine_bin"`
+	Standalone  bool                `yaml:"standalone"`
+	Model       string              `yaml:"model"`
+	Fallbacks   []string            `yaml:"fallbacks"`
+	Limits      *Limits             `yaml:"limits"`
+	Pricing     map[string]Pricing  `yaml:"pricing"`
+	Budget      float64             `yaml:"budget"`
+	MaxParallel int                 `yaml:"max_parallel"`
+	Fallback    FallbackPolicy      `yaml:"fallback"`
+	Prompt      Prompt              `yaml:"prompt"`
+	Subagents   Subagents           `yaml:"subagents"`
+	Run         RunOptions          `yaml:"run"`
+	StateFile   string              `yaml:"state_file"`
+	Instruction string              `yaml:"-"`
+	Providers   map[string]Provider `yaml:"providers"`
+	Gateway     GatewayOptions      `yaml:"gateway"`
+	Catalog     []CatalogEntry      `yaml:"catalog"`
 }
 
 // FallbackPolicy lists triggers handled by the fallback chain.
@@ -174,6 +208,9 @@ func (c *Config) Defaults() {
 	}
 	if c.StateFile == "" {
 		c.StateFile = defaultStatePath()
+	}
+	if c.Gateway.MaxWait == 0 {
+		c.Gateway.MaxWait = 20 * time.Second
 	}
 }
 
@@ -227,4 +264,54 @@ func (c *Config) GlobalPrompt() (string, error) {
 func (c *Config) Agent(name string) (AgentSpec, bool) {
 	a, ok := c.Prompt.Agents[name]
 	return a, ok
+}
+
+// GatewayEnabled reports whether the request gateway should run.
+func (c *Config) GatewayEnabled() bool {
+	if c.Gateway.Enabled != nil {
+		return *c.Gateway.Enabled
+	}
+	return len(c.Providers) > 0
+}
+
+// ResolveModel maps a public alias to the internal model id.
+func (c *Config) ResolveModel(name string) string {
+	for _, e := range c.Catalog {
+		if e.Alias == name && e.Model != "" {
+			return e.Model
+		}
+	}
+	return name
+}
+
+// CatalogFor returns the catalog entry matching an internal model id.
+func (c *Config) CatalogFor(model string) (CatalogEntry, bool) {
+	for _, e := range c.Catalog {
+		if e.Model == model {
+			return e, true
+		}
+	}
+	return CatalogEntry{}, false
+}
+
+// EffectivePrice returns the catalog price when set, else the global table.
+func (c *Config) EffectivePrice(model string) Pricing {
+	if e, ok := c.CatalogFor(model); ok && e.Pricing != nil {
+		return *e.Pricing
+	}
+	return c.ModelPrice(model)
+}
+
+// ProviderOf extracts the provider id from a provider/model reference.
+func ProviderOf(model string) string {
+	if i := strings.Index(model, "/"); i > 0 {
+		return model[:i]
+	}
+	return ""
+}
+
+// ProviderFor returns the gateway provider config for a model.
+func (c *Config) ProviderFor(model string) (Provider, bool) {
+	p, ok := c.Providers[ProviderOf(model)]
+	return p, ok
 }

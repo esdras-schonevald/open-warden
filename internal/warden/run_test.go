@@ -211,3 +211,44 @@ func TestSubagentPolicyMovesOnFallback(t *testing.T) {
 		t.Fatalf("fallback subagent model: %s", got)
 	}
 }
+
+func TestProviderOverridesOnlyWhenGatewaySet(t *testing.T) {
+	cfg := &config.Config{
+		Model: "primary/model",
+		Providers: map[string]config.Provider{
+			"primary": {Upstream: "https://api.example/v1"},
+		},
+	}
+	r := &Runner{Cfg: cfg}
+	if got := r.providerOverrides(); got != nil {
+		t.Fatalf("unexpected overrides without gateway: %v", got)
+	}
+	r.GatewayURL = "http://127.0.0.1:1234"
+	r.GatewayToken = "tok"
+	got := r.providerOverrides()
+	if got["primary"].BaseURL != "http://127.0.0.1:1234/primary/v1" {
+		t.Fatalf("bad base url: %+v", got)
+	}
+	if got["primary"].Headers["x-warden-gateway"] != "tok" {
+		t.Fatalf("missing gateway token header")
+	}
+	if !r.routed("primary/model") || r.routed("other/model") {
+		t.Fatal("routing detection wrong")
+	}
+}
+
+func TestChainResolvesAliases(t *testing.T) {
+	cfg := &config.Config{
+		Model: "siliconflow/real",
+		Catalog: []config.CatalogEntry{
+			{Alias: "cheap", Model: "siliconflow/real"},
+			{Alias: "backup", Model: "deepseek/real"},
+		},
+		Fallbacks: []string{"backup"},
+	}
+	r := &Runner{Cfg: cfg}
+	chain := r.chain(Options{Model: "cheap"}, config.AgentSpec{})
+	if strings.Join(chain, ",") != "siliconflow/real,deepseek/real" {
+		t.Fatalf("alias chain wrong: %v", chain)
+	}
+}

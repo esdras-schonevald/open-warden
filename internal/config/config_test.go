@@ -44,3 +44,35 @@ func TestLimitsFor(t *testing.T) {
 		t.Fatalf("override merge wrong: %+v", got)
 	}
 }
+
+func TestGatewayAndCatalog(t *testing.T) {
+	c := &Config{
+		Model:     "siliconflow/real-model",
+		Providers: map[string]Provider{"siliconflow": {Upstream: "https://api.example/v1"}},
+		Catalog: []CatalogEntry{
+			{Alias: "qwen", Label: "Qwen", Model: "siliconflow/real-model", Context: 1000,
+				Pricing: &Pricing{Input: 0.07, Output: 0.28}},
+		},
+	}
+	c.Defaults()
+	if !c.GatewayEnabled() {
+		t.Fatal("gateway should default to enabled when providers exist")
+	}
+	if got := c.ResolveModel("qwen"); got != "siliconflow/real-model" {
+		t.Fatalf("alias not resolved: %s", got)
+	}
+	if got := c.ResolveModel("other/model"); got != "other/model" {
+		t.Fatalf("raw model changed: %s", got)
+	}
+	if p := c.EffectivePrice("siliconflow/real-model"); p.Input != 0.07 {
+		t.Fatalf("catalog price not used: %+v", p)
+	}
+	if ProviderOf("siliconflow/real-model") != "siliconflow" {
+		t.Fatal("provider extraction failed")
+	}
+	off := false
+	c.Gateway.Enabled = &off
+	if c.GatewayEnabled() {
+		t.Fatal("explicit disable ignored")
+	}
+}

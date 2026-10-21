@@ -131,30 +131,62 @@ func readRandom(b []byte) (int, error) {
 // instructions the warden policy overrides.
 var agentNames = []string{"explore", "general", "plan"}
 
-// PrepareSubagents writes a scoped config assigning models/instructions to
-// subagents and returns env vars plus a cleanup function. When policy is
-// disabled or empty, nothing is generated.
-func PrepareSubagents(pol SubagentPolicy) ([]string, func(), error) {
+// ProviderOverride points one provider at warden's local gateway.
+type ProviderOverride struct {
+	BaseURL string
+	Headers map[string]string
+}
+
+// ConfigOptions describes the scoped engine configuration generated per run.
+type ConfigOptions struct {
+	Subagents SubagentPolicy
+	Providers map[string]ProviderOverride
+}
+
+// PrepareConfig writes a scoped engine config (subagent policy and provider
+// gateway overrides) and returns env vars plus a cleanup function.
+func PrepareConfig(opts ConfigOptions) ([]string, func(), error) {
 	noop := func() {}
-	if !pol.Enabled || (pol.Model == "" && pol.Instruction == "") {
+	cfg := map[string]any{}
+
+	pol := opts.Subagents
+	if pol.Enabled && (pol.Model != "" || pol.Instruction != "") {
+		type agentDef struct {
+			Model  string `json:"model,omitempty"`
+			Prompt string `json:"prompt,omitempty"`
+		}
+		agents := map[string]agentDef{}
+		for _, name := range agentNames {
+			def := agentDef{}
+			if pol.Model != "" {
+				def.Model = pol.Model
+			}
+			if pol.Instruction != "" {
+				def.Prompt = pol.Instruction
+			}
+			agents[name] = def
+		}
+		cfg["agent"] = agents
+	}
+
+	if len(opts.Providers) > 0 {
+		providers := map[string]any{}
+		for id, o := range opts.Providers {
+			entry := map[string]any{}
+			if o.BaseURL != "" {
+				entry["settings"] = map[string]any{"baseURL": o.BaseURL}
+			}
+			if len(o.Headers) > 0 {
+				entry["headers"] = o.Headers
+			}
+			providers[id] = entry
+		}
+		cfg["providers"] = providers
+	}
+
+	if len(cfg) == 0 {
 		return nil, noop, nil
 	}
-	type agentDef struct {
-		Model  string `json:"model,omitempty"`
-		Prompt string `json:"prompt,omitempty"`
-	}
-	agents := map[string]agentDef{}
-	for _, name := range agentNames {
-		def := agentDef{}
-		if pol.Model != "" {
-			def.Model = pol.Model
-		}
-		if pol.Instruction != "" {
-			def.Prompt = pol.Instruction
-		}
-		agents[name] = def
-	}
-	cfg := map[string]any{"agent": agents}
 	raw, err := json.Marshal(cfg)
 	if err != nil {
 		return nil, noop, err
@@ -168,7 +200,12 @@ func PrepareSubagents(pol SubagentPolicy) ([]string, func(), error) {
 		os.RemoveAll(dir)
 		return nil, noop, err
 	}
-	return []string{"ENGINE_CONFIG=" + path}, func() { os.RemoveAll(dir) }, nil
+	return []string{"OPENCODE_CONFIG=" + path}, func() { os.RemoveAll(dir) }, nil
+}
+
+// PrepareSubagents is a compatibility wrapper around PrepareConfig.
+func PrepareSubagents(pol SubagentPolicy) ([]string, func(), error) {
+	return PrepareConfig(ConfigOptions{Subagents: pol})
 }
 
 // Run executes one run against the engine, streaming events to onEvent.
@@ -303,7 +340,7 @@ func envFor(opts Options) []string {
 	env := os.Environ()
 	env = append(env, opts.ExtraEnv...)
 	// silence engine logs so stderr carries only actionable errors
-	env = append(env, "ENGINE_LOG_LEVEL=error")
+	env = append(env, "OPENCODE_LOG_LEVEL=error")
 	return env
 }
 
