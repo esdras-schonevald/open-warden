@@ -21,8 +21,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/esdras-schonevald/open-warden/internal/config"
 	"github.com/esdras-schonevald/open-warden/internal/limiter"
+	"github.com/esdras-schonevald/open-warden/internal/registry"
 )
 
 // Server is the local request gateway.
@@ -30,19 +30,21 @@ type Server struct {
 	URL   string
 	Token string
 
-	cfg   *config.Config
-	lim   *limiter.Limiter
-	http  *http.Client
-	ln    net.Listener
-	srv   *http.Server
-	debug bool
+	providers map[string]registry.Provider
+	lim       *limiter.Limiter
+	maxWait   time.Duration
+	headroom  int
+	http      *http.Client
+	ln        net.Listener
+	srv       *http.Server
+	debug     bool
 
 	mu       sync.Mutex
 	requests int
 }
 
 // New starts a gateway bound to a random loopback port.
-func New(cfg *config.Config, lim *limiter.Limiter) (*Server, error) {
+func New(providers map[string]registry.Provider, lim *limiter.Limiter, maxWait time.Duration, headroom int) (*Server, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("gateway listen: %w", err)
@@ -52,11 +54,19 @@ func New(cfg *config.Config, lim *limiter.Limiter) (*Server, error) {
 		ln.Close()
 		return nil, err
 	}
+	if maxWait <= 0 {
+		maxWait = 20 * time.Second
+	}
+	if headroom <= 0 {
+		headroom = 4096
+	}
 	s := &Server{
-		URL:   "http://" + ln.Addr().String(),
-		Token: hex.EncodeToString(raw),
-		cfg:   cfg,
-		lim:   lim,
+		URL:       "http://" + ln.Addr().String(),
+		Token:     hex.EncodeToString(raw),
+		providers: providers,
+		lim:       lim,
+		maxWait:   maxWait,
+		headroom:  headroom,
 		http: &http.Client{
 			Transport: &http.Transport{
 				Proxy:                 http.ProxyFromEnvironment,
@@ -108,7 +118,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	providerID := parts[0]
-	prov, ok := s.cfg.Providers[providerID]
+	prov, ok := s.providers[providerID]
 	if !ok || prov.Upstream == "" {
 		writeError(w, http.StatusNotFound, "provider_not_found", "provider is not routed through warden")
 		return
@@ -131,7 +141,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	est := 0
 	var reservedAt time.Time
 	if model != "" {
-		est = estimateTokens(body, s.cfg.Run.OutputHeadroom)
+		est = estimateTokens(body, s.headroom)
 		admitted, at := s.admit(r.Context(), providerID, model, est)
 		if !admitted {
 			writeError(w, http.StatusTooManyRequests, "rate_limit_exceeded",
@@ -199,7 +209,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 // failing a request that is only marginally over a burst limit.
 func (s *Server) admit(ctx context.Context, providerID, model string, est int) (bool, time.Time) {
 	key := limitKey(providerID, model)
-	deadline := time.Now().Add(s.cfg.Gateway.MaxWait)
+	deadline := time.Now().Add(s.maxWait)
 	for {
 		a := s.lim.Admit(key, est)
 		if a.Allowed {
@@ -280,7 +290,10 @@ func normalize(u rawUsage) (Tokens, bool) {
 
 func extractUsage(raw []byte) (Tokens, bool) {
 	var doc struct {
-		Usage    *rawUsage `json:"usage"`
+		Usage   *rawUsage `json:"usage"`
+		Message *struct {
+			Usage *rawUsage `json:"usage"`
+		} `json:"message"`
 		Response *struct {
 			Usage *rawUsage `json:"usage"`
 		} `json:"response"`
@@ -290,6 +303,9 @@ func extractUsage(raw []byte) (Tokens, bool) {
 	}
 	if doc.Usage != nil {
 		return normalize(*doc.Usage)
+	}
+	if doc.Message != nil && doc.Message.Usage != nil {
+		return normalize(*doc.Message.Usage)
 	}
 	if doc.Response != nil && doc.Response.Usage != nil {
 		return normalize(*doc.Response.Usage)
@@ -316,7 +332,7 @@ func (s *Server) copyStream(w http.ResponseWriter, r io.Reader) Tokens {
 				payload := bytes.TrimSpace(bytes.TrimPrefix(trimmed, []byte("data:")))
 				if len(payload) > 0 && !bytes.Equal(payload, []byte("[DONE]")) {
 					if t, ok := extractUsage(payload); ok {
-						actual = t
+						actual = mergeTokens(actual, t)
 					}
 				}
 			}
@@ -326,6 +342,27 @@ func (s *Server) copyStream(w http.ResponseWriter, r io.Reader) Tokens {
 		}
 	}
 	return actual
+}
+
+// mergeTokens combines usage fragments from streamed protocols (Anthropic
+// reports input usage in message_start and final output in message_delta).
+func mergeTokens(dst, src Tokens) Tokens {
+	if src.Input > 0 {
+		dst.Input = src.Input
+	}
+	if src.Output > 0 {
+		dst.Output = src.Output
+	}
+	if src.Reasoning > 0 {
+		dst.Reasoning = src.Reasoning
+	}
+	if src.CacheRead > 0 {
+		dst.CacheRead = src.CacheRead
+	}
+	if src.CacheWrite > 0 {
+		dst.CacheWrite = src.CacheWrite
+	}
+	return dst
 }
 
 func parseRequest(body []byte) (model string, stream bool, streamOpts map[string]any) {

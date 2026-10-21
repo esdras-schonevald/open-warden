@@ -12,18 +12,16 @@ import (
 
 	"github.com/esdras-schonevald/open-warden/internal/config"
 	"github.com/esdras-schonevald/open-warden/internal/limiter"
+	"github.com/esdras-schonevald/open-warden/internal/registry"
 )
 
 func testServer(t *testing.T, upstream string, rpm int) (*Server, *limiter.Limiter) {
 	t.Helper()
-	cfg := &config.Config{
-		Providers: map[string]config.Provider{"prov": {Upstream: upstream}},
-		Gateway:   config.GatewayOptions{MaxWait: 50 * time.Millisecond},
-		Limits:    &config.Limits{RPM: rpm},
-		Run:       config.RunOptions{OutputHeadroom: 100},
+	providers := map[string]registry.Provider{
+		"prov": {ID: "prov", Upstream: upstream, Protocol: registry.OpenAI},
 	}
-	lim := limiter.New(cfg.Limits, nil)
-	s, err := New(cfg, lim)
+	lim := limiter.New(func(string) config.Limits { return config.Limits{RPM: rpm} }, nil)
+	s, err := New(providers, lim, 50*time.Millisecond, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,5 +130,32 @@ func TestGatewayStreamsAndParsesUsage(t *testing.T) {
 	win := lim.Snapshot()["prov/m"]
 	if win == nil || len(win.Tokens) != 1 || win.Tokens[0].Tokens != 13 {
 		t.Fatalf("stream usage not applied: %+v", win)
+	}
+}
+
+func TestAnthropicStreamUsage(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl := w.(http.Flusher)
+		fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":11,\"cache_read_input_tokens\":3}}}\n\n")
+		fl.Flush()
+		fmt.Fprint(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":7}}\n\n")
+	}))
+	defer up.Close()
+
+	providers := map[string]registry.Provider{
+		"prov": {ID: "prov", Upstream: up.URL, Protocol: registry.Anthropic},
+	}
+	lim := limiter.New(func(string) config.Limits { return config.Limits{RPM: 10} }, nil)
+	s, err := New(providers, lim, time.Second, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	resp := do(t, s, `{"model":"claude","messages":[{"role":"user","content":"x"}]}`, nil)
+	io.ReadAll(resp.Body)
+	win := lim.Snapshot()["prov/claude"]
+	if win == nil || len(win.Tokens) != 1 || win.Tokens[0].Tokens != 21 {
+		t.Fatalf("anthropic usage not merged: %+v", win)
 	}
 }

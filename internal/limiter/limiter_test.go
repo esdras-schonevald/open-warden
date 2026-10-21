@@ -7,8 +7,12 @@ import (
 	"github.com/esdras-schonevald/open-warden/internal/config"
 )
 
+func resolver(l config.Limits) func(string) config.Limits {
+	return func(string) config.Limits { return l }
+}
+
 func TestRPMBlocksProactively(t *testing.T) {
-	l := New(&config.Limits{RPM: 2}, nil)
+	l := New(resolver(config.Limits{RPM: 2}), nil)
 	l.Consume("m", 10)
 	l.Consume("m", 10)
 	if a := l.Admit("m", 10); a.Allowed {
@@ -19,7 +23,7 @@ func TestRPMBlocksProactively(t *testing.T) {
 }
 
 func TestTPMWindow(t *testing.T) {
-	l := New(&config.Limits{TPM: 1000}, nil)
+	l := New(resolver(config.Limits{TPM: 1000}), nil)
 	l.Consume("m", 900)
 	if a := l.Admit("m", 200); a.Allowed {
 		t.Fatalf("request should exceed tpm")
@@ -30,10 +34,10 @@ func TestTPMWindow(t *testing.T) {
 }
 
 func TestModelOverride(t *testing.T) {
-	lim := &config.Limits{RPM: 100, Models: map[string]*config.Limits{
+	lim := config.Limits{RPM: 100, Models: map[string]*config.Limits{
 		"fast": {RPM: 1},
 	}}
-	l := New(lim, nil)
+	l := New(resolver(lim), nil)
 	l.Consume("fast", 1)
 	if a := l.Admit("fast", 1); a.Allowed {
 		t.Fatal("model override rpm=1 should block")
@@ -44,7 +48,7 @@ func TestModelOverride(t *testing.T) {
 }
 
 func TestAdjust(t *testing.T) {
-	l := New(&config.Limits{TPM: 1000}, nil)
+	l := New(resolver(config.Limits{TPM: 1000}), nil)
 	at := l.Consume("m", 1000)
 	if a := l.Admit("m", 1); a.Allowed {
 		t.Fatal("expected block")
@@ -56,14 +60,22 @@ func TestAdjust(t *testing.T) {
 }
 
 func TestEarliestWaitChoosesClosest(t *testing.T) {
-	l := New(&config.Limits{Models: map[string]*config.Limits{
+	l := New(resolver(config.Limits{Models: map[string]*config.Limits{
 		"a": {RPM: 1},
 		"b": {RPM: 1},
-	}}, nil)
+	}}), nil)
 	l.Consume("a", 1)
 	l.Consume("b", 1)
 	w := l.EarliestWait([]string{"a", "b"}, 1)
 	if w <= 0 || w > time.Minute {
 		t.Fatalf("unexpected wait %s", w)
+	}
+}
+
+func TestVariantNormalization(t *testing.T) {
+	l := New(resolver(config.Limits{RPM: 1}), nil)
+	l.Consume("provider/model#high", 1)
+	if a := l.Admit("provider/model#low", 1); a.Allowed {
+		t.Fatal("variants must share the same window")
 	}
 }

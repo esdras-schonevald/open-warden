@@ -18,19 +18,20 @@ import (
 // Limiter tracks sliding windows per model backed by persistent state.
 type Limiter struct {
 	mu      sync.Mutex
-	limits  *config.Limits
+	resolve func(string) config.Limits
 	windows map[string]*state.ModelWindow
 }
 
-// New builds a limiter over persistent state windows.
-func New(limits *config.Limits, windows map[string]*state.ModelWindow) *Limiter {
-	if limits == nil {
-		limits = &config.Limits{}
+// New builds a limiter over persistent state windows. resolve returns the
+// application-defined limits for a model.
+func New(resolve func(string) config.Limits, windows map[string]*state.ModelWindow) *Limiter {
+	if resolve == nil {
+		resolve = func(string) config.Limits { return config.Limits{} }
 	}
 	if windows == nil {
 		windows = map[string]*state.ModelWindow{}
 	}
-	return &Limiter{limits: limits, windows: windows}
+	return &Limiter{resolve: resolve, windows: windows}
 }
 
 func normalize(model string) string {
@@ -147,7 +148,8 @@ func (l *Limiter) Admit(model string, estTokens int) Admission {
 	defer l.mu.Unlock()
 	model = normalize(model)
 	now := time.Now()
-	lm := l.limits.For(model)
+	base := l.resolve(model)
+	lm := base.For(model)
 	w := l.window(model)
 	reqs, toks := prune(w, now)
 	req1, tok1 := countSince(reqs, toks, now, time.Minute)
@@ -172,7 +174,8 @@ func (l *Limiter) EarliestWait(models []string, estTokens int) time.Duration {
 	now := time.Now()
 	var earliest time.Time
 	for _, m := range models {
-		lm := l.limits.For(m)
+		base := l.resolve(m)
+		lm := base.For(m)
 		w := l.window(m)
 		free := nextFree(lm, w, estTokens, now)
 		if !free.IsZero() && (earliest.IsZero() || free.Before(earliest)) {

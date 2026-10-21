@@ -45,12 +45,10 @@ func testConfig(t *testing.T, bin string) *config.Config {
 	t.Helper()
 	cfg := &config.Config{
 		EngineBin: bin,
-		Model:     "primary/model",
-		Fallbacks: []string{"fallback/model"},
+		Model:     "qwen-coder-30b",
+		Fallbacks: []string{"deepseek-flash"},
 		Budget:    0.5,
 		StateFile: filepath.Join(t.TempDir(), "state.json"),
-		Limits:    &config.Limits{RPM: 100},
-		Pricing:   map[string]config.Pricing{},
 	}
 	cfg.Defaults()
 	cfg.Run.Timeout = 10 * time.Second
@@ -94,12 +92,14 @@ func TestRunStreamsOutputAndReports(t *testing.T) {
 func TestProactiveFallbackBeforeRateLimit(t *testing.T) {
 	bin, logPath := fakeEngine(t, 0)
 	cfg := testConfig(t, bin)
-	cfg.Limits = &config.Limits{RPM: 1}
 	cfg.Fallback.WaitBlocked = false
 	r, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
+	r.Lim = limiter.New(func(m string) config.Limits {
+		return config.Limits{RPM: 1}
+	}, nil)
 	r.Collect = zeroUsage
 	r.Out = &strings.Builder{}
 
@@ -114,12 +114,14 @@ func TestProactiveFallbackBeforeRateLimit(t *testing.T) {
 		t.Fatal("expected a proactive fallback event")
 	}
 	f := rep.Fallbacks[0]
-	if f.Reason != "rate_limit" || f.From != "primary/model" || f.To != "fallback/model" {
+	if f.Reason != "rate_limit" || f.From != "qwen-coder-30b" || f.To != "deepseek-flash" {
 		t.Fatalf("unexpected fallback: %+v", f)
 	}
 	logged, _ := os.ReadFile(logPath)
 	lines := strings.Fields(string(logged))
-	if len(lines) != 2 || lines[0] != "primary/model" || lines[1] != "fallback/model" {
+	if len(lines) != 2 ||
+		lines[0] != "siliconflow/Qwen/Qwen3-Coder-30B-A3B-Instruct" ||
+		lines[1] != "deepseek/deepseek-flash" {
 		t.Fatalf("engine call order wrong: %v", lines)
 	}
 }
@@ -168,12 +170,16 @@ func TestComposePromptGlobalAndAgent(t *testing.T) {
 
 func TestChainOrderAndFallback(t *testing.T) {
 	cfg := &config.Config{
-		Model:     "primary",
-		Fallbacks: []string{"f1", "f2"},
+		Model:     "qwen-coder-30b",
+		Fallbacks: []string{"deepseek-flash"},
 	}
 	r := &Runner{Cfg: cfg}
-	chain := r.chain(Options{}, config.AgentSpec{Fallback: "agent-fallback"})
-	want := []string{"primary", "agent-fallback", "f1", "f2"}
+	chain := r.chain(Options{}, config.AgentSpec{Fallback: "glm-5.3-flash"})
+	want := []string{
+		"siliconflow/Qwen/Qwen3-Coder-30B-A3B-Instruct",
+		"siliconflow/zai-org/GLM-5.3-Flash",
+		"deepseek/deepseek-flash",
+	}
 	if strings.Join(chain, ",") != strings.Join(want, ",") {
 		t.Fatalf("chain=%v", chain)
 	}
@@ -181,74 +187,78 @@ func TestChainOrderAndFallback(t *testing.T) {
 
 func TestSubagentFallbackWhenExhausted(t *testing.T) {
 	cfg := &config.Config{
-		Model: "primary",
-		Limits: &config.Limits{Models: map[string]*config.Limits{
-			"sub-primary": {RPM: 1},
-		}},
-		Subagents: config.Subagents{Model: "sub-primary", FallbackModel: "sub-fallback"},
+		Model: "free-glm",
+		Subagents: config.Subagents{
+			Model: "free-glm", FallbackModel: "free-deepseek",
+		},
 	}
-	lim := limiter.New(cfg.Limits, nil)
-	lim.Consume("sub-primary", 10)
+	lim := limiter.New(func(m string) config.Limits {
+		if m == "opencode/glm-5.3-flash-free" {
+			return config.Limits{RPM: 1}
+		}
+		return config.Limits{}
+	}, nil)
+	lim.Consume("opencode/glm-5.3-flash-free", 10)
 	r := &Runner{Cfg: cfg, Lim: lim}
-	got, exhausted := r.chooseSubagentModel("primary", 100)
-	if got != "sub-fallback" || exhausted != "sub-primary" {
+	got, exhausted := r.chooseSubagentModel("opencode/glm-5.3-flash-free", 100)
+	if got != "opencode/deepseek-v4.1-flash-free" || exhausted != "opencode/glm-5.3-flash-free" {
 		t.Fatalf("got=%s exhausted=%s", got, exhausted)
-	}
-	if got, _ := r.chooseSubagentModel("primary", 100); got == "" {
-		t.Fatal("fallback model must be returned")
 	}
 }
 
 func TestSubagentPolicyMovesOnFallback(t *testing.T) {
-	cfg := &config.Config{Model: "primary", Subagents: config.Subagents{
-		Model: "sub-primary", FallbackModel: "sub-fallback",
+	cfg := &config.Config{Model: "qwen-coder-30b", Subagents: config.Subagents{
+		Model: "glm-5.3-flash", FallbackModel: "deepseek-flash",
 	}}
 	r := &Runner{Cfg: cfg}
-	if got := r.subagentModel("primary"); got != "sub-primary" {
+	if got := r.subagentModel("siliconflow/Qwen/Qwen3-Coder-30B-A3B-Instruct"); got != "siliconflow/zai-org/GLM-5.3-Flash" {
 		t.Fatalf("primary subagent model: %s", got)
 	}
-	if got := r.subagentModel("fallback"); got != "sub-fallback" {
+	if got := r.subagentModel("deepseek/deepseek-flash"); got != "deepseek/deepseek-flash" {
 		t.Fatalf("fallback subagent model: %s", got)
 	}
 }
 
 func TestProviderOverridesOnlyWhenGatewaySet(t *testing.T) {
-	cfg := &config.Config{
-		Model: "primary/model",
-		Providers: map[string]config.Provider{
-			"primary": {Upstream: "https://api.example/v1"},
-		},
-	}
-	r := &Runner{Cfg: cfg}
+	r := &Runner{Cfg: &config.Config{Model: "qwen-coder-30b"}}
 	if got := r.providerOverrides(); got != nil {
 		t.Fatalf("unexpected overrides without gateway: %v", got)
 	}
 	r.GatewayURL = "http://127.0.0.1:1234"
 	r.GatewayToken = "tok"
 	got := r.providerOverrides()
-	if got["primary"].BaseURL != "http://127.0.0.1:1234/primary/v1" {
+	if got["siliconflow"].BaseURL != "http://127.0.0.1:1234/siliconflow/v1" {
 		t.Fatalf("bad base url: %+v", got)
 	}
-	if got["primary"].Headers["x-warden-gateway"] != "tok" {
+	if got["anthropic"].BaseURL != "http://127.0.0.1:1234/anthropic" {
+		t.Fatalf("bad anthropic base url: %+v", got)
+	}
+	if got["free-tier"].BaseURL != "" {
+		t.Fatalf("free-tier must not be routed")
+	}
+	if got["siliconflow"].Headers["x-warden-gateway"] != "tok" {
 		t.Fatalf("missing gateway token header")
 	}
-	if !r.routed("primary/model") || r.routed("other/model") {
-		t.Fatal("routing detection wrong")
+	if !r.routed("siliconflow/Qwen/Qwen3-Coder-30B-A3B-Instruct") {
+		t.Fatal("paid provider should be routed")
+	}
+	if r.routed("opencode/glm-5.3-flash-free") {
+		t.Fatal("free tier must stay direct")
+	}
+	if r.routed("unknown/model") {
+		t.Fatal("unknown provider must not be routed")
 	}
 }
 
 func TestChainResolvesAliases(t *testing.T) {
 	cfg := &config.Config{
-		Model: "siliconflow/real",
-		Catalog: []config.CatalogEntry{
-			{Alias: "cheap", Model: "siliconflow/real"},
-			{Alias: "backup", Model: "deepseek/real"},
-		},
-		Fallbacks: []string{"backup"},
+		Model:     "qwen-coder-30b",
+		Fallbacks: []string{"deepseek-flash"},
 	}
 	r := &Runner{Cfg: cfg}
-	chain := r.chain(Options{Model: "cheap"}, config.AgentSpec{})
-	if strings.Join(chain, ",") != "siliconflow/real,deepseek/real" {
+	chain := r.chain(Options{Model: "glm-5.3-flash"}, config.AgentSpec{})
+	want := []string{"siliconflow/zai-org/GLM-5.3-Flash", "deepseek/deepseek-flash"}
+	if strings.Join(chain, ",") != strings.Join(want, ",") {
 		t.Fatalf("alias chain wrong: %v", chain)
 	}
 }

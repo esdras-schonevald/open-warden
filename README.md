@@ -30,7 +30,8 @@ the user.
 ## Features
 
 1. Runs via `docker run` (no compose required).
-2. Proactive RPM, TPM, RPD and TPD limits — per model and global.
+2. Proactive RPM, TPM, RPD and TPD limits, defined by the application per
+   model.
 3. Per-run cost ceiling in USD; the run is interrupted when reached.
 4. Automatic fallback on rate limit, insufficient balance, or provider
    unavailability. Rate limits are handled **before** the request: if the
@@ -47,8 +48,11 @@ the user.
     sanitized and reported in warden vocabulary.
 11. A loopback request gateway puts warden in the path of every provider call
     (per-request RPM/TPM/RPD/TPD) for OpenAI-compatible providers.
-12. A curated model catalog exposes aliases, labels, context and prices —
-    never raw engine model ids or the fallback chain.
+12. A built-in model/provider registry works without configuration and exposes
+    aliases, labels, context and prices — never raw engine model ids or the
+    fallback chain.
+13. One-off runs against any OpenAI-compatible endpoint with `--base-url` and
+    `--api-key`, still routed through the gateway.
 
 ## Quick start with Docker
 
@@ -81,8 +85,16 @@ docker run --rm -it \
 
 No compose file is involved. Each invocation is a plain `docker run`.
 
+Discover what is available without any config:
+
+```bash
+docker run --rm -e SILICONFLOW_API_KEY esdrasschonevald/open-warden:latest models
+docker run --rm esdrasschonevald/open-warden:latest providers
+```
+
 > API keys are read from the environment (`SILICONFLOW_API_KEY`,
-> `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, ...). Never bake them into the image.
+> `DEEPSEEK_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`). Never bake
+> them into the image.
 
 ## Local build
 
@@ -122,6 +134,12 @@ Common flags for `run` / `agents`:
 | `--timeout <duration>` | Run timeout (e.g. `20m`). |
 | `--json` | Machine-readable output, including the full report. |
 | `-q, --quiet` | Do not stream assistant text. |
+| `--base-url <url>` | One-off OpenAI-compatible endpoint; requires `-m`. |
+| `--api-key <key>` | Override the provider credential (also `WARDEN_API_KEY`). |
+| `--api-key-file <file>` | Read the credential from a file. |
+
+`models` accepts `--all` (include models whose provider key is not set) and
+`--json`. `providers` accepts `--json`. Neither needs a configuration file.
 
 The prompt comes from arguments, `--prompt-file`, or stdin when piped.
 
@@ -132,8 +150,12 @@ Exit codes: `0` success, `1` failure, `2` usage error, `3` budget reached.
 ### Discover models
 
 ```bash
-open-warden models -c warden.yaml
+open-warden models
 ```
+
+No configuration file is needed. By default this lists models whose provider
+has a key configured, plus the managed `free-tier` models. Use `--all` to see
+every model known to the application.
 
 ```
 ALIAS             LABEL               CTX      $IN/M     $OUT/M
@@ -143,7 +165,9 @@ deepseek-flash    DeepSeek Flash      128k       0.15       0.60
 ```
 
 The list is intentionally small: **alias, label, context, input price, output
-price**. The underlying engine model id and fallback chain stay internal.
+price**. Models, providers, prices and limits are built into the application;
+they cannot be overridden by configuration. The underlying engine model id and
+fallback chain stay internal.
 
 `open-warden models --json` returns the same fields for a UI, and
 `open-warden models qwen-coder-30b` shows one entry.
@@ -158,6 +182,21 @@ open-warden run -c warden.yaml -m qwen-coder-30b --budget 2.00 \
 Aliases are resolved internally; `-m` also accepts a raw provider/model id for
 administrative use.
 
+### One-off endpoint without config
+
+```bash
+open-warden run \
+  --base-url https://api.deepseek.com \
+  --api-key "$DEEPSEEK_API_KEY" \
+  -m deepseek-flash \
+  "Fix the failing tests"
+```
+
+The custom endpoint still goes through the local gateway. `--api-key` alone
+overrides the credential of the provider selected by `-m`/config, without
+changing the provider. Prefer `--api-key-file` or `WARDEN_API_KEY` to keep the
+key out of shell history.
+
 ### Run every configured agent in parallel
 
 ```bash
@@ -167,8 +206,10 @@ open-warden agents -c warden.yaml "Implement the feature described in TASK.md"
 ### Check providers and credentials
 
 ```bash
-open-warden providers -c warden.yaml
+open-warden providers
 ```
+
+No configuration file is needed.
 
 ```
 PROVIDER     UPSTREAM                              ENV                        STATUS
@@ -205,84 +246,52 @@ docker run --rm -it \
   -v /run/secrets:/run/secrets:ro \
   -v "$PWD:/workspace" -v warden-data:/data \
   esdrasschonevald/open-warden:latest \
-  models -c /workspace/warden.yaml
+  models
 ```
 
 ## How requests flow
 
-For providers listed under `providers:`, open-warden starts a loopback
-OpenAI-compatible gateway and points the engine at it:
+The gateway is always on for pay-as-you-go providers:
 
 ```
-engine -> 127.0.0.1:<random>/<provider>/v1 -> warden gateway -> provider
+engine -> 127.0.0.1:<random>/<provider> -> warden gateway -> provider
 ```
 
-Before forwarding, the gateway estimates the request weight and checks RPM,
-TPM, RPD and TPD. If a window is closed, it waits up to `gateway.max_wait` and
-then returns 429; actual tokens from the response (including SSE usage frames)
-reconcile the estimates. This is **per request**, so tool calls and subagent
-requests are covered too.
+Before forwarding, the gateway estimates the request weight and checks the
+application-defined RPM, TPM, RPD and TPD windows for the model. If a window is
+closed, it waits up to 20 seconds and then returns 429; actual tokens from the
+response (including SSE usage frames) reconcile the estimates. This is **per
+request**, so tool calls and subagent requests are covered too.
 
-Providers not listed under `providers:` (including the embedded engine's free
-tier, which requires client attestation) are called directly. For those,
-warden performs a proactive admission check before the run and reconciles the
-usage from the session tree afterwards. The gateway is automatically used in
-standalone mode, which isolates config/credentials from any background
-service.
+- **OpenAI-compatible providers** (SiliconFlow, DeepSeek, OpenRouter and
+  `--base-url`) are proxied transparently.
+- **Anthropic** is proxied through its native `/v1/messages` protocol, with
+  streaming usage merged from `message_start`/`message_delta`.
+- **Managed free tier** is the only direct path: the engine's free models
+  require client attestation, which a local proxy would break. Publicly these
+  models are always shown as provider `free-tier`; the engine provider id never
+  appears in output.
+- Other providers are rejected with a clear error instead of silently bypassing
+  the gateway.
+
+The engine always runs in standalone mode so that the generated provider
+configuration and credentials apply to the run.
 
 ## Configuration
 
-See [`warden.example.yaml`](warden.example.yaml) for the complete reference.
-
-Minimal example:
+Models, providers, prices and limits are **not** configurable: they are part of
+the application. The config selects behavior only.
 
 ```yaml
-model: siliconflow/zai-org/GLM-5.3-Flash#low
+model: qwen-coder-30b
 fallbacks:
-  - deepseek/deepseek-flash
-  - siliconflow/zai-org/GLM-4.5-Air
+  - glm-5.3-flash
+  - deepseek-flash
 budget: 2.00
 
-providers:
-  siliconflow:
-    upstream: https://api.siliconflow.com/v1
-    env: [SILICONFLOW_API_KEY]
-  deepseek:
-    upstream: https://api.deepseek.com
-    env: [DEEPSEEK_API_KEY]
-
-gateway:
-  enabled: true
-  max_wait: 20s
-
-catalog:
-  - alias: qwen-coder-30b
-    label: Qwen3 Coder 30B
-    model: siliconflow/Qwen/Qwen3-Coder-30B-A3B-Instruct
-    context: 262144
-    pricing: {input: 0.07, output: 0.28}
-  - alias: glm-5.3-flash
-    label: GLM-5.3 Flash
-    model: siliconflow/zai-org/GLM-5.3-Flash
-    context: 200000
-    pricing: {input: 0.15, output: 0.50}
-
-limits:
-  rpm: 10
-  tpm: 120000
-  rpd: 500
-  tpd: 2000000
-  models:
-    siliconflow/zai-org/GLM-5.3-Flash:
-      rpm: 10
-      tpm: 100000
-
-pricing:
-  default: { input: 0.20, output: 0.60, cache_read: 0.02, cache_write: 0.20 }
-
 subagents:
-  model: siliconflow/zai-org/GLM-4.5-Air
-  fallback_model: deepseek/deepseek-flash
+  model: free-glm
+  fallback_model: deepseek-flash
   instruction_file: prompts/subagents.md
 
 prompt:
@@ -298,12 +307,39 @@ run:
   auto_approve: true
 ```
 
+See [`warden.example.yaml`](warden.example.yaml) for the complete reference.
+
+Provider credentials come from the environment. `open-warden providers` shows
+the expected variables and which ones are configured.
+
+## Built-in registry
+
+The application ships with this provider set:
+
+| Provider | Credential | Protocol |
+| --- | --- | --- |
+| `siliconflow` | `SILICONFLOW_API_KEY` | OpenAI-compatible, proxied |
+| `deepseek` | `DEEPSEEK_API_KEY` | OpenAI-compatible, proxied |
+| `openrouter` | `OPENROUTER_API_KEY` | OpenAI-compatible, proxied |
+| `anthropic` | `ANTHROPIC_API_KEY` | Anthropic `/v1/messages`, proxied |
+| `free-tier` | none | managed free models, direct |
+
+`free-tier` is the public identity for the engine's managed free models
+(`free-glm`, `free-deepseek`, `free-minimax`, `free-longcat`). Internally they
+map to the engine's own provider; that name never appears in `models`,
+`providers`, reports or errors.
+
+Every model has application-defined context, price and rate limits. The
+list is deliberately curated; use `open-warden models --all` to see everything
+and `open-warden models --json` for machine consumption.
+
 ## Proactive rate limiting
 
-Limits are sliding windows persisted in the state file, so they survive across
-`docker run` invocations that share the `/data` volume. With the gateway
-enabled, windows are consumed **per request**; otherwise they are consumed per
-run estimate and reconciled from session usage:
+Limits are application-defined per model and stored as sliding windows
+persisted in the state file, so they survive across `docker run` invocations
+that share the `/data` volume. Windows are consumed **per request** by the
+gateway; direct free-tier runs use a pre-flight estimate reconciled from
+session usage:
 
 | Window | Meaning |
 | --- | --- |
@@ -347,9 +383,10 @@ run's session tree every `run.poll_interval` and sums cost, including
 subagents; at the ceiling the run is interrupted and reported as
 `budget_exceeded` (exit code 3).
 
-Cost comes from provider-reported pricing when available. The `pricing` table
-acts as a lower bound, so the ceiling also works for free tiers that report
-zero cost.
+Cost comes from provider-reported pricing when available. The built-in price
+table acts as a lower bound, so the ceiling also works for free tiers that
+report zero cost. For a custom `--base-url` whose model is not in the registry,
+there is no price information and the budget cannot be computed.
 
 ## Prompts
 
@@ -412,8 +449,9 @@ through the state volume, and no engine details to scrape.
 
 ## Credentials
 
-- Keys are read from the environment. `warden.yaml` contains only variable
-  names, never values.
+- Keys are read from the environment. `warden.yaml` never contains key values.
+- `--api-key`, `--api-key-file` and `WARDEN_API_KEY` override the credential
+  for a single run; they are never written to disk.
 - `open-warden providers` shows which variables are configured without
   revealing them.
 - `<ENV>_FILE` is supported for Docker/Kubernetes secrets (for example

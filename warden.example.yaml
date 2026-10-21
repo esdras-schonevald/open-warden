@@ -1,115 +1,30 @@
 # open-warden — example configuration
 #
-# Copy to warden.yaml and adjust. All values shown are examples.
+# Models, providers, prices and rate limits are built into the application.
+# Inspect them with:
+#   open-warden models
+#   open-warden providers
+#
+# This file only selects behavior: model, fallbacks, budget, prompts, agents.
 
-# Primary model, in provider/model form. Variant suffix (#low/#high/#max) is
-# passed through to the engine.
-model: siliconflow/zai-org/GLM-5.3-Flash#low
+# Model alias from `open-warden models` (or a provider/model reference).
+model: qwen-coder-30b
 
-# Ordered fallback chain. Used proactively (before a rate limit is hit) and
-# reactively (quota, balance, unavailability).
+# Ordered fallback chain.
 fallbacks:
-  - opencode/glm-5.3-flash-free
-  - deepseek/deepseek-flash
+  - glm-5.3-flash
+  - deepseek-flash
 
-# Upstreams that warden proxies through its local request gateway. Only
-# OpenAI-compatible providers belong here; the embedded engine's own free
-# provider must stay direct (it requires client attestation).
-providers:
-  siliconflow:
-    upstream: https://api.siliconflow.com/v1
-    env: [SILICONFLOW_API_KEY]
-  deepseek:
-    upstream: https://api.deepseek.com
-    env: [DEEPSEEK_API_KEY]
-
-# The gateway is what puts warden in the request path: RPM/TPM/RPD/TPD are
-# checked per request, before the provider is called.
-gateway:
-  enabled: true
-  max_wait: 20s
-
-# Public model catalog. Consumers see alias/label/context/price only; the
-# underlying model id stays internal. Aliases are accepted by `run -m`.
-catalog:
-  - alias: qwen-coder-30b
-    label: Qwen3 Coder 30B
-    model: siliconflow/Qwen/Qwen3-Coder-30B-A3B-Instruct
-    context: 262144
-    pricing: {input: 0.07, output: 0.28}
-  - alias: glm-5.3-flash
-    label: GLM-5.3 Flash
-    model: siliconflow/zai-org/GLM-5.3-Flash
-    context: 200000
-    pricing: {input: 0.15, output: 0.50}
-  - alias: deepseek-flash
-    label: DeepSeek Flash
-    model: deepseek/deepseek-flash
-    context: 128000
-    pricing: {input: 0.15, output: 0.60}
-  - alias: free-glm
-    label: GLM-5.3 Flash (free tier)
-    model: opencode/glm-5.3-flash-free
-    context: 200000
-    pricing: {input: 0, output: 0}
-
-# Hard cost ceiling per run, in USD. The run is interrupted when reached.
-# 0 disables the ceiling.
+# Hard cost ceiling per run, in USD. 0 disables the ceiling.
 budget: 2.00
 
-# Proactive rate limits, applied per model. Requests that would exceed a
-# window are routed to the next model in the chain without waiting for a 429.
-limits:
-  rpm: 10          # requests per minute
-  tpm: 120000      # tokens per minute (input estimate + headroom)
-  rpd: 500         # requests per day
-  tpd: 2000000     # tokens per day
-  models:
-    siliconflow/zai-org/GLM-5.3-Flash:
-      rpm: 10
-      tpm: 100000
-      rpd: 300
-      tpd: 1500000
-    opencode/glm-5.3-flash-free:
-      rpm: 20
-      tpm: 200000
-      rpd: 1000
-      tpd: 4000000
-
-# USD per 1M tokens. Used as a lower bound for cost when the engine does not
-# report pricing (e.g. free tiers), so budget enforcement still works.
-pricing:
-  default:
-    input: 0.20
-    output: 0.60
-    reasoning: 0.60
-    cache_read: 0.02
-    cache_write: 0.20
-  siliconflow/zai-org/GLM-5.3-Flash:
-    input: 0.05
-    output: 0.20
-    reasoning: 0.20
-    cache_read: 0.01
-    cache_write: 0.05
-  deepseek/deepseek-flash:
-    input: 0.14
-    output: 0.28
-    reasoning: 0.28
-    cache_read: 0.014
-    cache_write: 0.14
-
 fallback:
-  # Failure classes that activate the chain.
   on: [rate_limit, quota, unavailable]
-  # Move subagents to their fallback model whenever the main model falls back.
   subagents: true
-  # When every model is rate-limited, wait for the nearest window to open.
-  # false = fail fast with a rate_limit error.
   wait_when_all_blocked: true
   max_retries: 4
 
 prompt:
-  # Applied to every agent, always first.
   global_file: prompts/global.md
   agents:
     builder:
@@ -119,17 +34,16 @@ prompt:
       prompt_file: prompts/reviewer.md
       workdir: /workspace
 
-# Subagent policy: which model subagents use and how they must behave.
+# Subagent policy: model aliases and the instruction injected into subagents.
 subagents:
-  model: opencode/glm-5.3-flash-free#low
-  fallback_model: deepseek/deepseek-flash
+  model: free-glm
+  fallback_model: deepseek-flash
   instruction_file: prompts/subagents.md
 
 run:
   timeout: 30m
   poll_interval: 2s
   auto_approve: true
-  # Token estimate = prompt_chars / estimate_divisor + output_headroom.
   estimate_divisor: 4
   output_headroom: 4096
 

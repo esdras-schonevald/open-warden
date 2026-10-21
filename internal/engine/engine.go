@@ -23,7 +23,11 @@ import (
 type Event struct {
 	Type      string `json:"type"`
 	SessionID string `json:"sessionID"`
-	Part      struct {
+	Error     *struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	} `json:"error"`
+	Part struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"part"`
@@ -135,6 +139,10 @@ var agentNames = []string{"explore", "general", "plan"}
 type ProviderOverride struct {
 	BaseURL string
 	Headers map[string]string
+	Name    string
+	Package string
+	Env     []string
+	Models  []string
 }
 
 // ConfigOptions describes the scoped engine configuration generated per run.
@@ -173,11 +181,27 @@ func PrepareConfig(opts ConfigOptions) ([]string, func(), error) {
 		providers := map[string]any{}
 		for id, o := range opts.Providers {
 			entry := map[string]any{}
+			if o.Name != "" {
+				entry["name"] = o.Name
+			}
+			if o.Package != "" {
+				entry["package"] = o.Package
+			}
+			if len(o.Env) > 0 {
+				entry["env"] = o.Env
+			}
 			if o.BaseURL != "" {
 				entry["settings"] = map[string]any{"baseURL": o.BaseURL}
 			}
 			if len(o.Headers) > 0 {
 				entry["headers"] = o.Headers
+			}
+			if len(o.Models) > 0 {
+				models := map[string]any{}
+				for _, m := range o.Models {
+					models[m] = map[string]any{"name": m}
+				}
+				entry["models"] = models
 			}
 			providers[id] = entry
 		}
@@ -219,6 +243,7 @@ func Run(ctx context.Context, opts Options, onEvent func(Event)) (*Result, ErrCl
 	var mu sync.Mutex
 	var stderr strings.Builder
 	var streamed strings.Builder
+	var streamErr strings.Builder
 
 	cmd.Stderr = &redirectWriter{mu: &mu, sink: &stderr}
 	var sessionMu sync.Mutex
@@ -251,6 +276,11 @@ func Run(ctx context.Context, opts Options, onEvent func(Event)) (*Result, ErrCl
 			var ev Event
 			if json.Unmarshal(line, &ev) != nil {
 				continue
+			}
+			if ev.Error != nil && ev.Error.Message != "" {
+				mu.Lock()
+				streamErr.WriteString(ev.Error.Type + ": " + ev.Error.Message + "\n")
+				mu.Unlock()
 			}
 			if ev.SessionID != "" {
 				sessionMu.Lock()
@@ -288,6 +318,9 @@ func Run(ctx context.Context, opts Options, onEvent func(Event)) (*Result, ErrCl
 	}
 	mu.Lock()
 	stderrText := stderr.String()
+	if stderrText == "" {
+		stderrText = streamErr.String()
+	}
 	mu.Unlock()
 	sessionMu.Lock()
 	sid := sessionID
