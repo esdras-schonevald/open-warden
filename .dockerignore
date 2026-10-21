@@ -1,0 +1,7 @@
+.git
+.github
+dist
+data
+tmp
+*.local.yaml
+warden.yaml

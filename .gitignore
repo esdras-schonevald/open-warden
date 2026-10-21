@@ -1,0 +1,14 @@
+# binaries
+/open-warden
+/dist/
+/tmp/
+
+# local config and runtime data
+/warden.yaml
+/data/
+*.local.yaml
+.env
+
+# editor
+.idea/
+.vscode/
