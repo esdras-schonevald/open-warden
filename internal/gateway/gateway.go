@@ -34,6 +34,9 @@ type Server struct {
 	lim       *limiter.Limiter
 	maxWait   time.Duration
 	headroom  int
+	maxOutput int
+	maxInput  int
+	capped    int
 	http      *http.Client
 	ln        net.Listener
 	srv       *http.Server
@@ -43,8 +46,16 @@ type Server struct {
 	requests int
 }
 
+// Options tunes gateway enforcement.
+type Options struct {
+	MaxWait   time.Duration
+	Headroom  int
+	MaxOutput int
+	MaxInput  int
+}
+
 // New starts a gateway bound to a random loopback port.
-func New(providers map[string]registry.Provider, lim *limiter.Limiter, maxWait time.Duration, headroom int) (*Server, error) {
+func New(providers map[string]registry.Provider, lim *limiter.Limiter, opts Options) (*Server, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("gateway listen: %w", err)
@@ -54,19 +65,21 @@ func New(providers map[string]registry.Provider, lim *limiter.Limiter, maxWait t
 		ln.Close()
 		return nil, err
 	}
-	if maxWait <= 0 {
-		maxWait = 20 * time.Second
+	if opts.MaxWait <= 0 {
+		opts.MaxWait = 20 * time.Second
 	}
-	if headroom <= 0 {
-		headroom = 4096
+	if opts.Headroom <= 0 {
+		opts.Headroom = 4096
 	}
 	s := &Server{
 		URL:       "http://" + ln.Addr().String(),
 		Token:     hex.EncodeToString(raw),
 		providers: providers,
 		lim:       lim,
-		maxWait:   maxWait,
-		headroom:  headroom,
+		maxWait:   opts.MaxWait,
+		headroom:  opts.Headroom,
+		maxOutput: opts.MaxOutput,
+		maxInput:  opts.MaxInput,
 		http: &http.Client{
 			Transport: &http.Transport{
 				Proxy:                 http.ProxyFromEnvironment,
@@ -98,6 +111,13 @@ func (s *Server) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	return s.srv.Shutdown(ctx)
+}
+
+// Capped reports how many requests had their output cap applied.
+func (s *Server) Capped() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.capped
 }
 
 // Requests reports how many proxied requests the gateway handled.
@@ -137,10 +157,29 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	if stream {
 		body = ensureStreamUsage(body, streamOpts)
 	}
+	if s.maxOutput > 0 && model != "" {
+		var capped bool
+		body, capped = applyOutputCap(body, r.URL.Path, prov.Protocol, s.maxOutput)
+		if capped {
+			s.mu.Lock()
+			s.capped++
+			s.mu.Unlock()
+		}
+	}
 
 	est := 0
 	var reservedAt time.Time
 	if model != "" {
+		if limit := s.maxInput; limit > 0 && estimateInput(body) > limit {
+			writeError(w, http.StatusRequestEntityTooLarge, "context_overflow",
+				"request exceeds the configured input token limit; reduce the context or enable compaction")
+			return
+		}
+		if ctxLen := registry.ContextFor(limitKey(providerID, model)); ctxLen > 0 && estimateInput(body) > ctxLen {
+			writeError(w, http.StatusRequestEntityTooLarge, "context_overflow",
+				"request exceeds the model context window; reduce the context or enable compaction")
+			return
+		}
 		est = estimateTokens(body, s.headroom)
 		admitted, at := s.admit(r.Context(), providerID, model, est)
 		if !admitted {
@@ -397,6 +436,43 @@ func ensureStreamUsage(body []byte, opts map[string]any) []byte {
 		return body
 	}
 	return out
+}
+
+// estimateInput estimates only the prompt weight (no output headroom).
+func estimateInput(body []byte) int {
+	return len(body)/4 + 256
+}
+
+// applyOutputCap lowers max_tokens/max_completion_tokens/max_output_tokens to
+// the configured cap. It never raises a value already chosen by the caller.
+func applyOutputCap(body []byte, path string, protocol registry.Protocol, cap int) ([]byte, bool) {
+	if cap <= 0 {
+		return body, false
+	}
+	var doc map[string]any
+	if json.Unmarshal(body, &doc) != nil {
+		return body, false
+	}
+	field := "max_tokens"
+	switch {
+	case protocol == registry.Anthropic:
+		field = "max_tokens"
+	case strings.Contains(path, "/responses"):
+		field = "max_output_tokens"
+	default:
+		if _, ok := doc["max_completion_tokens"]; ok {
+			field = "max_completion_tokens"
+		}
+	}
+	if cur, ok := doc[field].(float64); ok && cur > 0 && int(cur) <= cap {
+		return body, false
+	}
+	doc[field] = cap
+	out, err := json.Marshal(doc)
+	if err != nil {
+		return body, false
+	}
+	return out, true
 }
 
 // estimateTokens is deliberately conservative: JSON payload size plus a

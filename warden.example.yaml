@@ -34,11 +34,21 @@ prompt:
       prompt_file: prompts/reviewer.md
       workdir: /workspace
 
-# Subagent policy: model aliases and the instruction injected into subagents.
+# Subagent model policy. The delegation policy itself is fixed by the
+# application and is not configurable.
 subagents:
   model: free-glm
   fallback_model: deepseek-flash
-  instruction_file: prompts/subagents.md
+
+# Token economy. The fixed delegation policy is always active; economy adds
+# prevention rules and context/output safeguards.
+economy:
+  mode: balanced   # off | balanced | aggressive
+  # Optional explicit overrides (defaults come from the mode):
+  # tool_output: {max_lines: 200, max_bytes: 20480}
+  # compaction: {auto: true, keep_tokens: 8000, buffer: 12000}
+  # max_output_tokens: 32768
+  # max_input_tokens: 0
 
 run:
   timeout: 30m

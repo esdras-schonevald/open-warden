@@ -41,7 +41,8 @@ the user.
 6. Global prompts plus per-agent prompts.
 7. Detailed report: input, output, reasoning, cached tokens, subagent usage,
    request counts, cost, fallback events.
-8. Subagent policy: choose the subagent model and inject a usage instruction.
+8. Fixed subagent delegation policy (not user configurable) plus a
+   configurable subagent model and fallback.
 9. Subagent fallback: when the main model falls back (e.g. free tier
    exhausted), subagents move to their fallback model too.
 10. The embedded engine is never exposed to users: output and errors are
@@ -137,6 +138,10 @@ Common flags for `run` / `agents`:
 | `--base-url <url>` | One-off OpenAI-compatible endpoint; requires `-m`. |
 | `--api-key <key>` | Override the provider credential (also `WARDEN_API_KEY`). |
 | `--api-key-file <file>` | Read the credential from a file. |
+| `--economy <mode>` | Token economy: `off`, `balanced` (default), `aggressive`. |
+| `--no-economy` | Disable the economy mode. |
+| `--subagents-model <alias>` | Model used by subagents. |
+| `--subagents-fallback <alias>` | Subagent fallback model. |
 
 `models` accepts `--all` (include models whose provider key is not set) and
 `--json`. `providers` accepts `--json`. Neither needs a configuration file.
@@ -292,7 +297,9 @@ budget: 2.00
 subagents:
   model: free-glm
   fallback_model: deepseek-flash
-  instruction_file: prompts/subagents.md
+
+economy:
+  mode: balanced
 
 prompt:
   global_file: prompts/global.md
@@ -332,6 +339,35 @@ map to the engine's own provider; that name never appears in `models`,
 Every model has application-defined context, price and rate limits. The
 list is deliberately curated; use `open-warden models --all` to see everything
 and `open-warden models --json` for machine consumption.
+
+## Token economy
+
+The **delegation policy is fixed** and always injected into the main prompt.
+It cannot be viewed or changed by users: it defines when and how to delegate,
+what never to delegate, and that the primary agent remains accountable.
+Users can only choose the subagent model and fallback.
+
+Economy mode adds prevention rules on top:
+
+| Mode | Prompt rules | Tool output | Compaction | Output cap |
+|---|---|---|---|---|
+| `off` | none | engine default | engine default | none |
+| `balanced` | selective reads, summaries, artifacts | 200 lines / 20 KB | keep 8k / buffer 12k | 32768 |
+| `aggressive` | stricter | 100 lines / 10 KB | keep 4k / buffer 8k | 16384 |
+
+The output cap is applied by the gateway to `max_tokens`,
+`max_completion_tokens`, `max_output_tokens` or Anthropic `max_tokens`,
+never raising a smaller value chosen by the caller. Requests that exceed the
+model context are rejected before reaching the provider.
+
+```bash
+open-warden run --economy aggressive "Task"
+open-warden run --no-economy "Task"
+open-warden run --economy balanced --subagents-model qwen3-30b "Task"
+```
+
+`off` disables only warden's economy policy. The engine's own defaults and any
+global engine config still apply.
 
 ## Proactive rate limiting
 

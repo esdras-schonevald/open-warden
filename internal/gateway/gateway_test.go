@@ -21,7 +21,7 @@ func testServer(t *testing.T, upstream string, rpm int) (*Server, *limiter.Limit
 		"prov": {ID: "prov", Upstream: upstream, Protocol: registry.OpenAI},
 	}
 	lim := limiter.New(func(string) config.Limits { return config.Limits{RPM: rpm} }, nil)
-	s, err := New(providers, lim, 50*time.Millisecond, 100)
+	s, err := New(providers, lim, Options{MaxWait: 50 * time.Millisecond, Headroom: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestAnthropicStreamUsage(t *testing.T) {
 		"prov": {ID: "prov", Upstream: up.URL, Protocol: registry.Anthropic},
 	}
 	lim := limiter.New(func(string) config.Limits { return config.Limits{RPM: 10} }, nil)
-	s, err := New(providers, lim, time.Second, 100)
+	s, err := New(providers, lim, Options{MaxWait: time.Second, Headroom: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,5 +157,62 @@ func TestAnthropicStreamUsage(t *testing.T) {
 	win := lim.Snapshot()["prov/claude"]
 	if win == nil || len(win.Tokens) != 1 || win.Tokens[0].Tokens != 21 {
 		t.Fatalf("anthropic usage not merged: %+v", win)
+	}
+}
+
+func TestGatewayAppliesOutputCap(t *testing.T) {
+	var seen string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		seen = string(raw)
+		fmt.Fprint(w, `{"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+	}))
+	defer up.Close()
+	providers := map[string]registry.Provider{
+		"prov": {ID: "prov", Upstream: up.URL, Protocol: registry.OpenAI},
+	}
+	lim := limiter.New(func(string) config.Limits { return config.Limits{RPM: 10} }, nil)
+	s, err := New(providers, lim, Options{MaxWait: time.Second, Headroom: 100, MaxOutput: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	do(t, s, `{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"x"}]}`, nil)
+	if !strings.Contains(seen, `"max_tokens":10`) {
+		t.Fatalf("cap not applied: %s", seen)
+	}
+	do(t, s, `{"model":"m","max_tokens":5,"messages":[{"role":"user","content":"x"}]}`, nil)
+	if !strings.Contains(seen, `"max_tokens":5`) {
+		t.Fatalf("explicit smaller cap overwritten: %s", seen)
+	}
+	do(t, s, `{"model":"m","messages":[{"role":"user","content":"x"}]}`, nil)
+	if !strings.Contains(seen, `"max_tokens":10`) {
+		t.Fatalf("cap not added when absent: %s", seen)
+	}
+}
+
+func TestGatewayInputGuard(t *testing.T) {
+	called := false
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		fmt.Fprint(w, `{}`)
+	}))
+	defer up.Close()
+	providers := map[string]registry.Provider{
+		"prov": {ID: "prov", Upstream: up.URL, Protocol: registry.OpenAI},
+	}
+	lim := limiter.New(func(string) config.Limits { return config.Limits{} }, nil)
+	s, err := New(providers, lim, Options{MaxWait: time.Second, Headroom: 100, MaxInput: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	resp := do(t, s, `{"model":"m","messages":[{"role":"user","content":"a long request"}]}`, nil)
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status %d, want 413", resp.StatusCode)
+	}
+	if called {
+		t.Fatal("upstream should not be called")
 	}
 }

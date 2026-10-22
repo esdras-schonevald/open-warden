@@ -15,6 +15,7 @@ import (
 	"github.com/esdras-schonevald/open-warden/internal/config"
 	"github.com/esdras-schonevald/open-warden/internal/engine"
 	"github.com/esdras-schonevald/open-warden/internal/limiter"
+	"github.com/esdras-schonevald/open-warden/internal/policy"
 	"github.com/esdras-schonevald/open-warden/internal/registry"
 	"github.com/esdras-schonevald/open-warden/internal/report"
 	"github.com/esdras-schonevald/open-warden/internal/state"
@@ -139,6 +140,14 @@ func (r *Runner) composePrompt(agent string, task string) (string, error) {
 		if strings.TrimSpace(body) != "" {
 			parts = append(parts, strings.TrimSpace(body))
 		}
+	}
+	// Fixed policies are not user configurable and always come after the
+	// user's global/agent instructions, before the task.
+	if p := policy.Delegation(); p != "" {
+		parts = append(parts, p)
+	}
+	if p := policy.Economy(r.Cfg.Economy.Mode); p != "" {
+		parts = append(parts, p)
 	}
 	if strings.TrimSpace(task) != "" {
 		parts = append(parts, strings.TrimSpace(task))
@@ -311,13 +320,13 @@ func (r *Runner) Run(ctx context.Context, opts Options) (*report.Run, error) {
 			})
 		}
 		pol := engine.SubagentPolicy{
-			Enabled:     r.subagentEnabled(),
-			Model:       subModel,
-			Instruction: r.subagentInstruction(),
+			Enabled: r.subagentEnabled(),
+			Model:   subModel,
 		}
 		env, cleanup, err := engine.PrepareConfig(engine.ConfigOptions{
 			Subagents: pol,
 			Providers: r.providerOverrides(),
+			Economy:   &r.Cfg.Economy,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("prepare engine config: %w", err)
@@ -598,16 +607,7 @@ func (r *Runner) chooseSubagentModel(mainModel string, est int) (string, string)
 
 func (r *Runner) subagentEnabled() bool {
 	s := r.Cfg.Subagents
-	return s.Model != "" || s.FallbackModel != "" || s.Instruction != "" || s.InstructionFile != ""
-}
-
-func (r *Runner) subagentInstruction() string {
-	if r.Cfg.Subagents.InstructionFile != "" {
-		if raw, err := os.ReadFile(r.Cfg.Subagents.InstructionFile); err == nil {
-			return string(raw)
-		}
-	}
-	return r.Cfg.Subagents.Instruction
+	return s.Model != "" || s.FallbackModel != ""
 }
 
 // collect merges usage across all attempted sessions.

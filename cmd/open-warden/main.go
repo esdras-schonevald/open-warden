@@ -27,7 +27,7 @@ import (
 	"github.com/esdras-schonevald/open-warden/internal/warden"
 )
 
-var version = "0.3.1"
+var version = "0.4.0"
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -93,6 +93,10 @@ Common flags for run/agents:
       --base-url <url>       one-off OpenAI-compatible endpoint (requires -m)
       --api-key <key>        override the provider credential
       --api-key-file <file>  read the credential from a file
+      --economy <mode>       token economy: off|balanced|aggressive
+      --no-economy           disable the economy mode
+      --subagents-model <m>  model alias used by subagents
+      --subagents-fallback <m>  subagent fallback model alias
       --json                 machine-readable output (includes full report)
   -q, --quiet                do not stream assistant text
 
@@ -113,19 +117,23 @@ Examples:
 }
 
 type runFlags struct {
-	config     string
-	agent      string
-	model      string
-	fallback   string
-	budget     float64
-	workdir    string
-	promptFile string
-	jsonOut    bool
-	quiet      bool
-	timeout    time.Duration
-	baseURL    string
-	apiKey     string
-	apiKeyFile string
+	config      string
+	agent       string
+	model       string
+	fallback    string
+	budget      float64
+	workdir     string
+	promptFile  string
+	jsonOut     bool
+	quiet       bool
+	timeout     time.Duration
+	baseURL     string
+	apiKey      string
+	apiKeyFile  string
+	economy     string
+	noEconomy   bool
+	subModel    string
+	subFallback string
 }
 
 func parseRunFlags(fs *flag.FlagSet) *runFlags {
@@ -148,6 +156,10 @@ func parseRunFlags(fs *flag.FlagSet) *runFlags {
 	fs.StringVar(&rf.baseURL, "base-url", "", "one-off OpenAI-compatible endpoint")
 	fs.StringVar(&rf.apiKey, "api-key", "", "API key override (or WARDEN_API_KEY)")
 	fs.StringVar(&rf.apiKeyFile, "api-key-file", "", "read API key from file")
+	fs.StringVar(&rf.economy, "economy", "", "economy mode: off|balanced|aggressive")
+	fs.BoolVar(&rf.noEconomy, "no-economy", false, "disable economy mode")
+	fs.StringVar(&rf.subModel, "subagents-model", "", "model alias used by subagents")
+	fs.StringVar(&rf.subFallback, "subagents-fallback", "", "subagent fallback model alias")
 	return rf
 }
 
@@ -187,6 +199,26 @@ func cmdRun(args []string, multi bool) int {
 	}
 	if rf.timeout > 0 {
 		cfg.Run.Timeout = rf.timeout
+	}
+	if rf.subModel != "" {
+		cfg.Subagents.Model = rf.subModel
+	}
+	if rf.subFallback != "" {
+		cfg.Subagents.FallbackModel = rf.subFallback
+	}
+	if rf.noEconomy && rf.economy != "" {
+		return fail(fmt.Errorf("use either --economy or --no-economy"))
+	}
+	if rf.noEconomy {
+		cfg.Economy.Mode = "off"
+	} else if rf.economy != "" {
+		switch rf.economy {
+		case "off", "balanced", "aggressive":
+		default:
+			return fail(fmt.Errorf("invalid --economy mode %q (use off, balanced or aggressive)", rf.economy))
+		}
+		cfg.Economy = config.Economy{Mode: rf.economy}
+		cfg.Economy.Defaults()
 	}
 	prompt, err := readPrompt(fs.Args(), rf.promptFile)
 	if err != nil {
@@ -239,7 +271,12 @@ func cmdRun(args []string, multi bool) int {
 			Env: []string{"WARDEN_CUSTOM_API_KEY"}, Protocol: registry.OpenAI,
 		}
 	}
-	gw, err := gateway.New(providers, runner.Lim, 20*time.Second, cfg.Run.OutputHeadroom)
+	gw, err := gateway.New(providers, runner.Lim, gateway.Options{
+		MaxWait:   20 * time.Second,
+		Headroom:  cfg.Run.OutputHeadroom,
+		MaxOutput: cfg.Economy.OutputCap(),
+		MaxInput:  cfg.Economy.MaxInputTokens,
+	})
 	if err != nil {
 		return fail(err)
 	}
@@ -527,6 +564,8 @@ func cmdValidate(args []string) int {
 			name, l.RPM, l.TPM, l.RPD, l.TPD, p.Input, p.Output)
 	}
 	fmt.Printf("subagents: model=%s fallback=%s\n", coalesce(cfg.Subagents.Model, "-"), coalesce(cfg.Subagents.FallbackModel, "-"))
+	fmt.Printf("economy: mode=%s output_cap=%d input_cap=%d\n",
+		cfg.Economy.Mode, cfg.Economy.OutputCap(), cfg.Economy.MaxInputTokens)
 	fmt.Printf("gateway: always on (free-tier direct)\n")
 	fmt.Printf("registry: %d providers, %d models\n", len(registry.Providers()), len(registry.Models()))
 	agents := (&warden.Runner{Cfg: cfg}).AgentNames("")

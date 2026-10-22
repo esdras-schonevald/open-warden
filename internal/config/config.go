@@ -75,12 +75,52 @@ const (
 	TriggerUnavailable FallbackTrigger = "unavailable"
 )
 
-// Subagents defines the subagent policy surfaced to the engine.
+// Subagents defines the subagent model policy. Prompts are fixed by the
+// application and cannot be configured by users.
 type Subagents struct {
-	Model           string `yaml:"model"`
-	FallbackModel   string `yaml:"fallback_model"`
-	Instruction     string `yaml:"instruction"`
-	InstructionFile string `yaml:"instruction_file"`
+	Model         string `yaml:"model"`
+	FallbackModel string `yaml:"fallback_model"`
+}
+
+// ToolOutput caps tool output before it enters the context.
+type ToolOutput struct {
+	MaxLines int `yaml:"max_lines"`
+	MaxBytes int `yaml:"max_bytes"`
+}
+
+// Compaction controls automatic context compaction.
+type Compaction struct {
+	Auto       bool `yaml:"auto"`
+	KeepTokens int  `yaml:"keep_tokens"`
+	Buffer     int  `yaml:"buffer"`
+}
+
+// Media controls attachment downscaling.
+type Media struct {
+	ImageResize bool `yaml:"image_resize"`
+	MaxWidth    int  `yaml:"max_width"`
+	MaxHeight   int  `yaml:"max_height"`
+}
+
+// Economy is the application-defined token economy policy.
+type Economy struct {
+	Mode            string      `yaml:"mode"` // off | balanced | aggressive
+	ToolOutput      *ToolOutput `yaml:"tool_output"`
+	Compaction      *Compaction `yaml:"compaction"`
+	Media           *Media      `yaml:"media"`
+	MaxOutputTokens *int        `yaml:"max_output_tokens"`
+	MaxInputTokens  int         `yaml:"max_input_tokens"`
+}
+
+// On reports whether the economy mode is active.
+func (e *Economy) On() bool { return e.Mode != "" && e.Mode != "off" }
+
+// OutputCap returns the per-request output token cap (0 = none).
+func (e *Economy) OutputCap() int {
+	if !e.On() || e.MaxOutputTokens == nil {
+		return 0
+	}
+	return *e.MaxOutputTokens
 }
 
 // Prompt carries global and per-agent prompts.
@@ -113,6 +153,7 @@ type Config struct {
 	Prompt      Prompt         `yaml:"prompt"`
 	Subagents   Subagents      `yaml:"subagents"`
 	Run         RunOptions     `yaml:"run"`
+	Economy     Economy        `yaml:"economy"`
 	StateFile   string         `yaml:"state_file"`
 	Instruction string         `yaml:"-"`
 }
@@ -154,6 +195,7 @@ func (c *Config) Defaults() {
 	if c.Run.OutputHeadroom == 0 {
 		c.Run.OutputHeadroom = 4096
 	}
+	c.Economy.Defaults()
 	if c.StateFile == "" {
 		c.StateFile = defaultStatePath()
 	}
@@ -190,7 +232,47 @@ func (c *Config) Validate() error {
 	if c.Model == "" {
 		return fmt.Errorf("config: model is required")
 	}
+	switch c.Economy.Mode {
+	case "off", "balanced", "aggressive":
+	default:
+		return fmt.Errorf("config: economy.mode must be off, balanced or aggressive")
+	}
 	return nil
+}
+
+// Defaults applies the economy profile defaults only where the user did not
+// provide an explicit override.
+func (e *Economy) Defaults() {
+	if e.Mode == "" {
+		e.Mode = "balanced"
+	}
+	if e.Mode == "off" {
+		return
+	}
+	if e.ToolOutput == nil {
+		if e.Mode == "aggressive" {
+			e.ToolOutput = &ToolOutput{MaxLines: 100, MaxBytes: 10240}
+		} else {
+			e.ToolOutput = &ToolOutput{MaxLines: 200, MaxBytes: 20480}
+		}
+	}
+	if e.Compaction == nil {
+		if e.Mode == "aggressive" {
+			e.Compaction = &Compaction{Auto: true, KeepTokens: 4000, Buffer: 8000}
+		} else {
+			e.Compaction = &Compaction{Auto: true, KeepTokens: 8000, Buffer: 12000}
+		}
+	}
+	if e.Media == nil {
+		e.Media = &Media{ImageResize: true, MaxWidth: 1000, MaxHeight: 1000}
+	}
+	if e.MaxOutputTokens == nil {
+		v := 32768
+		if e.Mode == "aggressive" {
+			v = 16384
+		}
+		e.MaxOutputTokens = &v
+	}
 }
 
 // GlobalPrompt returns the global prompt text, loading from file when needed.

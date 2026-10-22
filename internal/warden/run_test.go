@@ -163,8 +163,14 @@ func TestComposePromptGlobalAndAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "GLOBAL\n\nAGENT\n\nTASK" {
-		t.Fatalf("compose: %q", got)
+	if !strings.Contains(got, "GLOBAL") || !strings.Contains(got, "AGENT") ||
+		!strings.Contains(got, "SUBAGENT POLICY") || !strings.Contains(got, "TASK") {
+		t.Fatalf("compose missing sections: %q", got)
+	}
+	if strings.Index(got, "GLOBAL") > strings.Index(got, "AGENT") ||
+		strings.Index(got, "AGENT") > strings.Index(got, "SUBAGENT POLICY") ||
+		strings.Index(got, "SUBAGENT POLICY") > strings.Index(got, "TASK") {
+		t.Fatalf("compose order wrong: %q", got)
 	}
 }
 
@@ -273,5 +279,35 @@ func TestAPIKeyScopedToSelectedProvider(t *testing.T) {
 	}
 	if env, _ := r.apiKeyEnv("opencode/glm-5.3-flash-free"); env != "" {
 		t.Fatalf("free tier must not receive the key: %q", env)
+	}
+}
+
+func TestComposePromptEconomyModes(t *testing.T) {
+	cfg := &config.Config{Prompt: config.Prompt{Global: "G"}}
+	off := &Runner{Cfg: cfg}
+	off.Cfg.Economy.Mode = "off"
+	got, err := off.composePrompt("", "T")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "SUBAGENT POLICY") {
+		t.Fatal("delegation policy must always be present")
+	}
+	if strings.Contains(got, "TOKEN ECONOMY") {
+		t.Fatal("economy policy must be absent when off")
+	}
+
+	balanced := &Runner{Cfg: cfg}
+	balanced.Cfg.Economy.Mode = "balanced"
+	got, _ = balanced.composePrompt("", "T")
+	if !strings.Contains(got, "TOKEN ECONOMY") || !strings.Contains(got, "BALANCED") {
+		t.Fatal("balanced economy policy missing")
+	}
+
+	aggressive := &Runner{Cfg: cfg}
+	aggressive.Cfg.Economy.Mode = "aggressive"
+	got, _ = aggressive.composePrompt("", "T")
+	if !strings.Contains(got, "AGGRESSIVE") {
+		t.Fatal("aggressive economy policy missing")
 	}
 }

@@ -4,6 +4,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/esdras-schonevald/open-warden/internal/config"
 )
 
 func TestClassify(t *testing.T) {
@@ -51,7 +53,7 @@ func TestBuildArgs(t *testing.T) {
 }
 
 func TestPrepareSubagents(t *testing.T) {
-	env, cleanup, err := PrepareSubagents(SubagentPolicy{Enabled: true, Model: "p/sub", Instruction: "be brief"})
+	env, cleanup, err := PrepareSubagents(SubagentPolicy{Enabled: true, Model: "p/sub"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,5 +63,56 @@ func TestPrepareSubagents(t *testing.T) {
 	}
 	if _, err := os.Stat(strings.TrimPrefix(env[0], "OPENCODE_CONFIG=")); err != nil {
 		t.Fatalf("config file missing: %v", err)
+	}
+}
+
+func TestPrepareConfigEconomy(t *testing.T) {
+	eco := &config.Economy{Mode: "balanced"}
+	eco.Defaults()
+	env, cleanup, err := PrepareConfig(ConfigOptions{Economy: eco})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if len(env) != 1 {
+		t.Fatalf("expected config env, got %v", env)
+	}
+	path := strings.TrimPrefix(env[0], "OPENCODE_CONFIG=")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"tool_output", "max_lines", "compaction", "keep", "media"} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("config missing %q: %s", want, raw)
+		}
+	}
+
+	off := &config.Economy{Mode: "off"}
+	env, cleanup, err = PrepareConfig(ConfigOptions{Economy: off})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if len(env) != 0 {
+		t.Fatalf("economy off should not generate config: %v", env)
+	}
+}
+
+func TestPrepareConfigSubagentModelOnly(t *testing.T) {
+	env, cleanup, err := PrepareConfig(ConfigOptions{
+		Subagents: SubagentPolicy{Enabled: true, Model: "siliconflow/zai-org/GLM-5.3-Flash"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	raw, _ := os.ReadFile(strings.TrimPrefix(env[0], "OPENCODE_CONFIG="))
+	if !strings.Contains(string(raw), `"agent"`) ||
+		!strings.Contains(string(raw), "siliconflow/zai-org/GLM-5.3-Flash") {
+		t.Fatalf("subagent model missing: %s", raw)
+	}
+	if strings.Contains(string(raw), `"prompt"`) {
+		t.Fatalf("subagent prompt must not be user-configurable: %s", raw)
 	}
 }

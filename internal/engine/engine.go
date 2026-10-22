@@ -17,6 +17,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/esdras-schonevald/open-warden/internal/config"
 )
 
 // Event is one streamed event from a run.
@@ -40,10 +42,9 @@ type SessionRef struct {
 
 // SubagentPolicy controls the models and instruction assigned to subagents.
 type SubagentPolicy struct {
-	Model       string
-	Fallback    string
-	Instruction string
-	Enabled     bool
+	Model    string
+	Fallback string
+	Enabled  bool
 }
 
 // Options for a single engine run.
@@ -149,6 +150,7 @@ type ProviderOverride struct {
 type ConfigOptions struct {
 	Subagents SubagentPolicy
 	Providers map[string]ProviderOverride
+	Economy   *config.Economy
 }
 
 // PrepareConfig writes a scoped engine config (subagent policy and provider
@@ -158,23 +160,41 @@ func PrepareConfig(opts ConfigOptions) ([]string, func(), error) {
 	cfg := map[string]any{}
 
 	pol := opts.Subagents
-	if pol.Enabled && (pol.Model != "" || pol.Instruction != "") {
+	if pol.Enabled && pol.Model != "" {
 		type agentDef struct {
-			Model  string `json:"model,omitempty"`
-			Prompt string `json:"prompt,omitempty"`
+			Model string `json:"model,omitempty"`
 		}
 		agents := map[string]agentDef{}
 		for _, name := range agentNames {
-			def := agentDef{}
-			if pol.Model != "" {
-				def.Model = pol.Model
-			}
-			if pol.Instruction != "" {
-				def.Prompt = pol.Instruction
-			}
-			agents[name] = def
+			agents[name] = agentDef{Model: pol.Model}
 		}
 		cfg["agent"] = agents
+	}
+
+	if eco := opts.Economy; eco != nil && eco.On() {
+		if eco.ToolOutput != nil {
+			cfg["tool_output"] = map[string]any{
+				"max_lines": eco.ToolOutput.MaxLines,
+				"max_bytes": eco.ToolOutput.MaxBytes,
+			}
+		}
+		if eco.Compaction != nil {
+			cfg["compaction"] = map[string]any{
+				"auto":   eco.Compaction.Auto,
+				"keep":   map[string]any{"tokens": eco.Compaction.KeepTokens},
+				"buffer": eco.Compaction.Buffer,
+			}
+		}
+		if eco.Media != nil {
+			cfg["media"] = map[string]any{
+				"image": map[string]any{
+					"auto_resize":      eco.Media.ImageResize,
+					"max_width":        eco.Media.MaxWidth,
+					"max_height":       eco.Media.MaxHeight,
+					"max_base64_bytes": 1048576,
+				},
+			}
+		}
 	}
 
 	if len(opts.Providers) > 0 {

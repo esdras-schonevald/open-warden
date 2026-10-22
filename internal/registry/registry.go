@@ -237,6 +237,14 @@ func PublicName(ref string) string {
 	return ref
 }
 
+// ContextFor returns the context window for an internal reference.
+func ContextFor(ref string) int {
+	if m, ok := ModelForRef(ref); ok {
+		return m.Context
+	}
+	return 0
+}
+
 // PriceFor returns the price for an internal reference.
 func PriceFor(ref string) config.Pricing {
 	if m, ok := ModelForRef(ref); ok {
