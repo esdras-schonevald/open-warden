@@ -258,12 +258,25 @@ func PriceFor(ref string) config.Pricing {
 	return config.Pricing{}
 }
 
-// LimitsFor returns the rate limits for an internal reference.
+// LimitsFor returns the rate limits for an internal reference or public alias.
 func LimitsFor(ref string) config.Limits {
+	if m, ok := Resolve(ref); ok {
+		return m.Limits
+	}
 	if m, ok := ModelForRef(ref); ok {
 		return m.Limits
 	}
 	return config.Limits{}
+}
+
+// LimiterKey maps an internal reference to the public alias used in the
+// persisted rate-limit windows. Unknown references (custom providers) are
+// returned unchanged.
+func LimiterKey(ref string) string {
+	if m, ok := ModelForRef(ref); ok {
+		return m.Alias
+	}
+	return ref
 }
 
 // GatewayBase returns the base URL the engine must use for a provider behind

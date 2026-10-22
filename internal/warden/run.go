@@ -65,6 +65,7 @@ func New(cfg *config.Config) (*Runner, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load state: %w", err)
 	}
+	migrateWindows(st.Windows)
 	return &Runner{
 		Cfg:     cfg,
 		Lim:     limiter.New(registry.LimitsFor, st.Windows),
@@ -79,6 +80,7 @@ func (r *Runner) persist(rec *state.RunRecord) error {
 	windows := r.Lim.Snapshot()
 	return state.Update(r.Cfg.StateFile, func(f *state.File) {
 		state.MergeWindows(f.Windows, windows)
+		migrateWindows(f.Windows)
 		if rec != nil {
 			f.History = append(f.History, *rec)
 			if len(f.History) > 500 {
@@ -207,11 +209,15 @@ func (r *Runner) estimateTokens(prompt string) int {
 // It returns the chosen model, its index, and an optional wait duration.
 func (r *Runner) admission(chain []string, est int) (string, int, time.Duration, error) {
 	for i, m := range chain {
-		if ok := r.Lim.Admit(m, est); ok.Allowed {
+		if ok := r.Lim.Admit(registry.LimiterKey(m), est); ok.Allowed {
 			return m, i, 0, nil
 		}
 	}
-	wait := r.Lim.EarliestWait(chain, est)
+	keys := make([]string, len(chain))
+	for i, m := range chain {
+		keys[i] = registry.LimiterKey(m)
+	}
+	wait := r.Lim.EarliestWait(keys, est)
 	if r.Cfg.Fallback.WaitBlocked {
 		return "", -1, wait, nil
 	}
@@ -308,7 +314,7 @@ func (r *Runner) Run(ctx context.Context, opts Options) (*report.Run, error) {
 		if !routed {
 			// direct providers are accounted at run level; gateway-routed
 			// providers are accounted per request by the proxy
-			reservedAt = r.Lim.Consume(model, est)
+			reservedAt = r.Lim.Consume(registry.LimiterKey(model), est)
 		}
 		rep.Model = registry.PublicName(model)
 		currentModel = model
@@ -389,7 +395,7 @@ func (r *Runner) Run(ctx context.Context, opts Options) (*report.Run, error) {
 			if actual, aerr := r.Collect(set.Get()[slot], rep.Started); aerr == nil && actual != nil {
 				used := actual.Total.Input + actual.Total.Output +
 					actual.Total.Reasoning + actual.Total.CacheRead
-				r.Lim.Adjust(model, reservedAt, used)
+				r.Lim.Adjust(registry.LimiterKey(model), reservedAt, used)
 			}
 		}
 		if budgetHit() {
@@ -477,6 +483,26 @@ func (r *Runner) Run(ctx context.Context, opts Options) (*report.Run, error) {
 		return rep, lastErr
 	}
 	return rep, nil
+}
+
+// migrateWindows rewrites legacy internal keys (e.g. opencode/...) to public
+// aliases and merges any collisions.
+func migrateWindows(windows map[string]*state.ModelWindow) {
+	for key, window := range windows {
+		alias := registry.LimiterKey(key)
+		if alias == key {
+			continue
+		}
+		if existing, ok := windows[alias]; ok {
+			state.MergeWindows(
+				map[string]*state.ModelWindow{alias: existing},
+				map[string]*state.ModelWindow{alias: window},
+			)
+		} else {
+			windows[alias] = window
+		}
+		delete(windows, key)
+	}
 }
 
 // routed reports whether the model belongs to a provider handled by the
@@ -602,7 +628,7 @@ func (r *Runner) chooseSubagentModel(mainModel string, est int) (string, string)
 	if base == "" || fb == "" || base == fb {
 		return base, ""
 	}
-	if !r.Lim.Admit(base, est).Allowed {
+	if !r.Lim.Admit(registry.LimiterKey(base), est).Allowed {
 		return fb, base
 	}
 	return base, ""

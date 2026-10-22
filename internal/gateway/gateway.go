@@ -291,7 +291,7 @@ func (s *Server) admit(ctx context.Context, providerID, model string, est int) (
 // limitKey normalizes an upstream model reference to the warden model key
 // (provider/model), dropping any variant suffix.
 func limitKey(providerID, model string) string {
-	return providerID + "/" + strings.TrimSpace(model)
+	return registry.LimiterKey(providerID + "/" + strings.TrimSpace(model))
 }
 
 // Tokens is the normalized accounting payload from an upstream response.

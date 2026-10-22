@@ -27,7 +27,7 @@ import (
 	"github.com/esdras-schonevald/open-warden/internal/warden"
 )
 
-var version = "0.6.0"
+var version = "0.7.0"
 
 func main() {
 	os.Exit(run(os.Args[1:]))

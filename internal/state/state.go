@@ -174,6 +174,17 @@ func writeLocked(path string, f *File) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
+	for _, w := range f.Windows {
+		if w == nil {
+			continue
+		}
+		if w.Requests == nil {
+			w.Requests = []time.Time{}
+		}
+		if w.Tokens == nil {
+			w.Tokens = []TokenEvent{}
+		}
+	}
 	raw, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return err

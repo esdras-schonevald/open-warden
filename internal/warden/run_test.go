@@ -199,12 +199,12 @@ func TestSubagentFallbackWhenExhausted(t *testing.T) {
 		},
 	}
 	lim := limiter.New(func(m string) config.Limits {
-		if m == "opencode/glm-5.3-flash-free" {
+		if m == "free-glm" {
 			return config.Limits{RPM: 1}
 		}
 		return config.Limits{}
 	}, nil)
-	lim.Consume("opencode/glm-5.3-flash-free", 10)
+	lim.Consume("free-glm", 10)
 	r := &Runner{Cfg: cfg, Lim: lim}
 	got, exhausted := r.chooseSubagentModel("opencode/glm-5.3-flash-free", 100)
 	if got != "opencode/deepseek-v4.1-flash-free" || exhausted != "opencode/glm-5.3-flash-free" {
