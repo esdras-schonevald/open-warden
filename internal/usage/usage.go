@@ -42,6 +42,7 @@ type Report struct {
 	Subagents Totals            `json:"subagents"`
 	Total     Totals            `json:"total"`
 	ByModel   map[string]Totals `json:"by_model"`
+	Sessions  int               `json:"sessions"`
 }
 
 // DBPath resolves the engine database location.
@@ -172,6 +173,7 @@ func Collect(root string, since time.Time) (*Report, error) {
 			Cost:       cost,
 			Requests:   counts[id.String],
 		}
+		rep.Sessions++
 		if parentID.Valid && parentID.String != "" {
 			// child session: attribute to subagents bucket
 			rep.Subagents.Add(t)

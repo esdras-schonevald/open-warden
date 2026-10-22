@@ -38,6 +38,9 @@ type Run struct {
 	Usage             *usage.Report   `json:"usage"`
 	Fallbacks         []FallbackEvent `json:"fallback_events"`
 	RateWaits         int             `json:"rate_limit_waits"`
+	OutputCapApplied  int             `json:"output_cap_applied"`
+	OutputCapTokens   int             `json:"output_cap_tokens,omitempty"`
+	OutputTruncated   int             `json:"output_truncated"`
 	Output            string          `json:"output"`
 	ErrorDetail       string          `json:"error,omitempty"`
 }

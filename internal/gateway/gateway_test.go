@@ -216,3 +216,23 @@ func TestGatewayInputGuard(t *testing.T) {
 		t.Fatal("upstream should not be called")
 	}
 }
+
+func TestGatewayDetectsTruncation(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"choices":[{"finish_reason":"length"}],"usage":{"prompt_tokens":1,"completion_tokens":10}}`)
+	}))
+	defer up.Close()
+	providers := map[string]registry.Provider{
+		"prov": {ID: "prov", Upstream: up.URL, Protocol: registry.OpenAI},
+	}
+	lim := limiter.New(func(string) config.Limits { return config.Limits{} }, nil)
+	s, err := New(providers, lim, Options{MaxWait: time.Second, Headroom: 100, MaxOutput: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	do(t, s, `{"model":"m","messages":[{"role":"user","content":"x"}]}`, nil)
+	if s.Capped() != 1 || s.Truncated() != 1 {
+		t.Fatalf("capped=%d truncated=%d", s.Capped(), s.Truncated())
+	}
+}

@@ -624,6 +624,7 @@ func (r *Runner) collectAll(sessions []string, since time.Time) *usage.Report {
 		out.Root.Add(rep.Root)
 		out.Subagents.Add(rep.Subagents)
 		out.Total.Add(rep.Total)
+		out.Sessions += rep.Sessions
 		for m, t := range rep.ByModel {
 			cur := out.ByModel[m]
 			cur.Add(t)

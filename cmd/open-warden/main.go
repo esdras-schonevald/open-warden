@@ -27,7 +27,7 @@ import (
 	"github.com/esdras-schonevald/open-warden/internal/warden"
 )
 
-var version = "0.5.0"
+var version = "0.6.0"
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -300,7 +300,13 @@ func cmdRun(args []string, multi bool) int {
 	}
 
 	if !multi {
+		cappedBefore, truncatedBefore := gw.Capped(), gw.Truncated()
 		rep, err := runner.Run(ctx, opts)
+		if rep != nil {
+			rep.OutputCapApplied = gw.Capped() - cappedBefore
+			rep.OutputCapTokens = cfg.Economy.OutputCap()
+			rep.OutputTruncated = gw.Truncated() - truncatedBefore
+		}
 		if rf.reportFile != "" && rep != nil {
 			if werr := writeReport(rf.reportFile, rep); werr != nil {
 				fmt.Fprintln(os.Stderr, "error: write report:", werr)

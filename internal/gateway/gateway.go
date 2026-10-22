@@ -37,6 +37,7 @@ type Server struct {
 	maxOutput int
 	maxInput  int
 	capped    int
+	truncated int
 	http      *http.Client
 	ln        net.Listener
 	srv       *http.Server
@@ -118,6 +119,13 @@ func (s *Server) Capped() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.capped
+}
+
+// Truncated reports how many responses stopped because they hit the cap.
+func (s *Server) Truncated() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.truncated
 }
 
 // Requests reports how many proxied requests the gateway handled.
@@ -226,14 +234,21 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 
 	var actual Tokens
+	hitLimit := false
 	if stream || strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
-		actual = s.copyStream(w, resp.Body)
+		actual, hitLimit = s.copyStream(w, resp.Body)
 	} else {
 		raw, _ := io.ReadAll(resp.Body)
 		w.Write(raw)
 		if t, ok := extractUsage(raw); ok {
 			actual = t
 		}
+		hitLimit = responseTruncated(raw)
+	}
+	if hitLimit {
+		s.mu.Lock()
+		s.truncated++
+		s.mu.Unlock()
 	}
 	if actual.Total() > 0 && model != "" {
 		s.lim.Adjust(limitKey(providerID, model), reservedAt, actual.Total())
@@ -353,10 +368,11 @@ func extractUsage(raw []byte) (Tokens, bool) {
 }
 
 // copyStream forwards SSE chunks and extracts usage from the final data frames.
-func (s *Server) copyStream(w http.ResponseWriter, r io.Reader) Tokens {
+func (s *Server) copyStream(w http.ResponseWriter, r io.Reader) (Tokens, bool) {
 	flusher, _ := w.(http.Flusher)
 	reader := bufio.NewReaderSize(r, 64*1024)
 	var actual Tokens
+	truncated := false
 	for {
 		line, err := reader.ReadBytes('\n')
 		if len(line) > 0 {
@@ -373,6 +389,9 @@ func (s *Server) copyStream(w http.ResponseWriter, r io.Reader) Tokens {
 					if t, ok := extractUsage(payload); ok {
 						actual = mergeTokens(actual, t)
 					}
+					if responseTruncated(payload) {
+						truncated = true
+					}
 				}
 			}
 		}
@@ -380,7 +399,7 @@ func (s *Server) copyStream(w http.ResponseWriter, r io.Reader) Tokens {
 			break
 		}
 	}
-	return actual
+	return actual, truncated
 }
 
 // mergeTokens combines usage fragments from streamed protocols (Anthropic
@@ -402,6 +421,48 @@ func mergeTokens(dst, src Tokens) Tokens {
 		dst.CacheWrite = src.CacheWrite
 	}
 	return dst
+}
+
+// responseTruncated detects protocol-specific "hit the output cap" signals.
+func responseTruncated(raw []byte) bool {
+	var doc struct {
+		Choices []struct {
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+		StopReason string `json:"stop_reason"`
+		Delta      *struct {
+			StopReason string `json:"stop_reason"`
+		} `json:"delta"`
+		Message *struct {
+			StopReason string `json:"stop_reason"`
+		} `json:"message"`
+		Status            string `json:"status"`
+		IncompleteDetails *struct {
+			Reason string `json:"reason"`
+		} `json:"incomplete_details"`
+	}
+	if json.Unmarshal(raw, &doc) != nil {
+		return false
+	}
+	for _, choice := range doc.Choices {
+		if choice.FinishReason == "length" {
+			return true
+		}
+	}
+	if doc.StopReason == "max_tokens" {
+		return true
+	}
+	if doc.Delta != nil && doc.Delta.StopReason == "max_tokens" {
+		return true
+	}
+	if doc.Message != nil && doc.Message.StopReason == "max_tokens" {
+		return true
+	}
+	if doc.Status == "incomplete" && doc.IncompleteDetails != nil &&
+		doc.IncompleteDetails.Reason == "max_output_tokens" {
+		return true
+	}
+	return false
 }
 
 func parseRequest(body []byte) (model string, stream bool, streamOpts map[string]any) {

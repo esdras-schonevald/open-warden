@@ -463,8 +463,19 @@ via `open-warden report` (or `report --json`).
 `--report-file <path>` writes the same report as JSON while keeping normal text
 streaming on stdout. This is the integration path for external orchestration
 (claim/run/log/usage scripts): the caller gets `id`, `status`, `model`,
-`economy_mode`, `subagents_model`, `fallback_events`, `budget` and the full
-`usage` tree without parsing logs.
+`economy_mode`, `subagents_model`, `fallback_events`, `budget`, the full
+`usage` tree (including `sessions` and subagent splits) without parsing logs.
+
+Output-limit fields:
+
+- `output_cap_applied`: requests where the gateway lowered the output cap.
+- `output_cap_tokens`: cap value used.
+- `output_truncated`: responses that actually stopped at the cap
+  (`finish_reason=length`, Anthropic `max_tokens`, Responses
+  `max_output_tokens`).
+
+`capped` is not "bytes removed". The model never generates beyond the cap, so
+the removed content is not observable; `truncated` is the real signal.
 
 ## Integrating with an orchestrator
 
