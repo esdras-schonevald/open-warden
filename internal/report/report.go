@@ -23,20 +23,23 @@ type FallbackEvent struct {
 
 // Run ties together everything worth reporting about a run.
 type Run struct {
-	ID             string          `json:"id"`
-	Agent          string          `json:"agent"`
-	Started        time.Time       `json:"started"`
-	DurationSec    float64         `json:"duration_sec"`
-	Model          string          `json:"model"`
-	Status         string          `json:"status"`
-	Budget         float64         `json:"budget"`
-	Cost           float64         `json:"cost"`
-	BudgetExceeded bool            `json:"budget_exceeded"`
-	Usage          *usage.Report   `json:"usage"`
-	Fallbacks      []FallbackEvent `json:"fallback_events"`
-	RateWaits      int             `json:"rate_limit_waits"`
-	Output         string          `json:"output"`
-	ErrorDetail    string          `json:"error,omitempty"`
+	ID                string          `json:"id"`
+	Agent             string          `json:"agent"`
+	Started           time.Time       `json:"started"`
+	DurationSec       float64         `json:"duration_sec"`
+	Model             string          `json:"model"`
+	EconomyMode       string          `json:"economy_mode,omitempty"`
+	SubagentsModel    string          `json:"subagents_model,omitempty"`
+	SubagentsFallback string          `json:"subagents_fallback,omitempty"`
+	Status            string          `json:"status"`
+	Budget            float64         `json:"budget"`
+	Cost              float64         `json:"cost"`
+	BudgetExceeded    bool            `json:"budget_exceeded"`
+	Usage             *usage.Report   `json:"usage"`
+	Fallbacks         []FallbackEvent `json:"fallback_events"`
+	RateWaits         int             `json:"rate_limit_waits"`
+	Output            string          `json:"output"`
+	ErrorDetail       string          `json:"error,omitempty"`
 }
 
 // JSON renders the report as machine-readable JSON.

@@ -78,7 +78,7 @@ func New(cfg *config.Config) (*Runner, error) {
 func (r *Runner) persist(rec *state.RunRecord) error {
 	windows := r.Lim.Snapshot()
 	return state.Update(r.Cfg.StateFile, func(f *state.File) {
-		f.Windows = windows
+		state.MergeWindows(f.Windows, windows)
 		if rec != nil {
 			f.History = append(f.History, *rec)
 			if len(f.History) > 500 {
@@ -248,13 +248,14 @@ func (r *Runner) Run(ctx context.Context, opts Options) (*report.Run, error) {
 	est := r.estimateTokens(prompt)
 
 	rep := &report.Run{
-		ID:        engine.NewSessionID(),
-		Agent:     firstNonEmpty(opts.Agent, "default"),
-		Started:   time.Now().UTC(),
-		Model:     chain[0],
-		Budget:    budget,
-		Status:    "running",
-		Fallbacks: []report.FallbackEvent{},
+		ID:          engine.NewSessionID(),
+		Agent:       firstNonEmpty(opts.Agent, "default"),
+		Started:     time.Now().UTC(),
+		Model:       chain[0],
+		Budget:      budget,
+		EconomyMode: r.Cfg.Economy.Mode,
+		Status:      "running",
+		Fallbacks:   []report.FallbackEvent{},
 	}
 	set := &sessionSet{}
 	currentModel := chain[0]
@@ -313,6 +314,8 @@ func (r *Runner) Run(ctx context.Context, opts Options) (*report.Run, error) {
 		currentModel = model
 
 		subModel, exhausted := r.chooseSubagentModel(model, r.Cfg.Run.OutputHeadroom)
+		rep.SubagentsModel = registry.PublicName(subModel)
+		rep.SubagentsFallback = registry.PublicName(resolveModel(r.Cfg.Subagents.FallbackModel))
 		if exhausted != "" {
 			rep.Fallbacks = append(rep.Fallbacks, report.FallbackEvent{
 				At: time.Now().UTC(), From: registry.PublicName(exhausted), To: registry.PublicName(subModel),

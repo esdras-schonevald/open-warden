@@ -142,6 +142,7 @@ Common flags for `run` / `agents`:
 | `--no-economy` | Disable the economy mode. |
 | `--subagents-model <alias>` | Model used by subagents. |
 | `--subagents-fallback <alias>` | Subagent fallback model. |
+| `--report-file <file>` | Write the run report as JSON while still streaming text. |
 
 `models` accepts `--all` (include models whose provider key is not set) and
 `--json`. `providers` accepts `--json`. Neither needs a configuration file.
@@ -458,6 +459,12 @@ duration: 84.2s
 Subagent consumption is collected by walking the session tree, so delegated
 work is never invisible. History is persisted in the state file and available
 via `open-warden report` (or `report --json`).
+
+`--report-file <path>` writes the same report as JSON while keeping normal text
+streaming on stdout. This is the integration path for external orchestration
+(claim/run/log/usage scripts): the caller gets `id`, `status`, `model`,
+`economy_mode`, `subagents_model`, `fallback_events`, `budget` and the full
+`usage` tree without parsing logs.
 
 ## Integrating with an orchestrator
 

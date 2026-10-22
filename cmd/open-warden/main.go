@@ -27,7 +27,7 @@ import (
 	"github.com/esdras-schonevald/open-warden/internal/warden"
 )
 
-var version = "0.4.0"
+var version = "0.5.0"
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -97,6 +97,7 @@ Common flags for run/agents:
       --no-economy           disable the economy mode
       --subagents-model <m>  model alias used by subagents
       --subagents-fallback <m>  subagent fallback model alias
+      --report-file <file>   write the run report as JSON to a file
       --json                 machine-readable output (includes full report)
   -q, --quiet                do not stream assistant text
 
@@ -134,6 +135,7 @@ type runFlags struct {
 	noEconomy   bool
 	subModel    string
 	subFallback string
+	reportFile  string
 }
 
 func parseRunFlags(fs *flag.FlagSet) *runFlags {
@@ -160,6 +162,7 @@ func parseRunFlags(fs *flag.FlagSet) *runFlags {
 	fs.BoolVar(&rf.noEconomy, "no-economy", false, "disable economy mode")
 	fs.StringVar(&rf.subModel, "subagents-model", "", "model alias used by subagents")
 	fs.StringVar(&rf.subFallback, "subagents-fallback", "", "subagent fallback model alias")
+	fs.StringVar(&rf.reportFile, "report-file", "", "write the run report as JSON to this file")
 	return rf
 }
 
@@ -298,6 +301,11 @@ func cmdRun(args []string, multi bool) int {
 
 	if !multi {
 		rep, err := runner.Run(ctx, opts)
+		if rf.reportFile != "" && rep != nil {
+			if werr := writeReport(rf.reportFile, rep); werr != nil {
+				fmt.Fprintln(os.Stderr, "error: write report:", werr)
+			}
+		}
 		printRun(rep, rf.jsonOut, rf.quiet)
 		return exitFor(rep, err)
 	}
@@ -316,6 +324,18 @@ func cmdRun(args []string, multi bool) int {
 		return 1
 	}
 	return 0
+}
+
+func writeReport(path string, rep *report.Run) error {
+	raw, err := rep.JSON()
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(raw+"\n"), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func printRun(rep *report.Run, jsonOut, quiet bool) {

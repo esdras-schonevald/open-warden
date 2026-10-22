@@ -48,3 +48,37 @@ func TestPruneKeepsRecent(t *testing.T) {
 		t.Fatal("state should preserve raw windows; limiter prunes them")
 	}
 }
+
+func TestMergeWindowsDedupesAndPrefersAdjusted(t *testing.T) {
+	t1 := time.Now().Add(-time.Minute)
+	t2 := time.Now()
+	dst := map[string]*ModelWindow{
+		"m": {
+			Requests: []time.Time{t1},
+			Tokens:   []TokenEvent{{At: t1, Tokens: 1000, Model: "m"}},
+		},
+	}
+	src := map[string]*ModelWindow{
+		"m": {
+			Requests: []time.Time{t1, t2},
+			Tokens: []TokenEvent{
+				{At: t1, Tokens: 250, Model: "m", Adjusted: true},
+				{At: t2, Tokens: 500, Model: "m"},
+			},
+		},
+	}
+	MergeWindows(dst, src)
+	w := dst["m"]
+	if len(w.Requests) != 2 {
+		t.Fatalf("requests merged wrong: %+v", w.Requests)
+	}
+	if len(w.Tokens) != 2 {
+		t.Fatalf("tokens merged wrong: %+v", w.Tokens)
+	}
+	if w.Tokens[0].Tokens != 250 || !w.Tokens[0].Adjusted {
+		t.Fatalf("adjusted event should win: %+v", w.Tokens[0])
+	}
+	if w.Tokens[1].Tokens != 500 {
+		t.Fatalf("new event lost: %+v", w.Tokens[1])
+	}
+}

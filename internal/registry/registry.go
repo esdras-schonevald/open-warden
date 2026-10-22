@@ -219,9 +219,14 @@ func ProviderForRef(ref string) (Provider, bool) {
 }
 
 // ModelForRef returns the registry entry matching an internal reference.
+// Variant suffixes (#low/#high/...) are ignored for lookup.
 func ModelForRef(ref string) (Model, bool) {
+	base := ref
+	if i := strings.Index(base, "#"); i >= 0 {
+		base = base[:i]
+	}
 	for _, m := range models {
-		if m.Ref() == ref {
+		if m.Ref() == base {
 			return m, true
 		}
 	}

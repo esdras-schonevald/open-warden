@@ -219,6 +219,7 @@ func (l *Limiter) Adjust(model string, at time.Time, actualTokens int) {
 	for i := range toks {
 		if toks[i].Model == model && toks[i].At.Equal(at) {
 			toks[i].Tokens = actualTokens
+			toks[i].Adjusted = true
 			break
 		}
 	}
