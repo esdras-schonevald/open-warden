@@ -186,7 +186,10 @@ open-warden run -c warden.yaml -m qwen-coder-30b --budget 2.00 \
 ```
 
 Aliases are resolved internally; `-m` also accepts a raw provider/model id for
-administrative use.
+administrative use. A reference may carry a reasoning variant suffix, for
+example `siliconflow/zai-org/GLM-5.3-Flash#high`, `free-tier/glm-5.3-flash#low`
+or `free-glm#low`. The suffix is preserved for the engine and ignored when
+resolving the model, its price and its limits.
 
 ### One-off endpoint without config
 
@@ -335,7 +338,9 @@ The application ships with this provider set:
 `free-tier` is the public identity for the engine's managed free models
 (`free-glm`, `free-deepseek`, `free-minimax`, `free-longcat`). Internally they
 map to the engine's own provider; that name never appears in `models`,
-`providers`, reports or errors.
+`providers`, reports or errors. They can also be referenced as
+`free-tier/<model>` (for example `free-tier/glm-5.3-flash` or
+`free-tier/deepseek-v4.1-flash`), with an optional variant suffix.
 
 Every model has application-defined context, price and rate limits. The
 list is deliberately curated; use `open-warden models --all` to see everything

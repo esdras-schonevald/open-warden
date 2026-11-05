@@ -37,6 +37,7 @@ type Model struct {
 	Provider       string // public provider id (free-tier for managed models)
 	EngineProvider string // engine provider id (internal)
 	EngineModel    string // upstream model id (internal)
+	PublicModel    string // optional public model name (defaults to EngineModel)
 	Context        int
 	Price          config.Pricing
 	Limits         config.Limits
@@ -46,7 +47,15 @@ type Model struct {
 func (m Model) Ref() string { return m.EngineProvider + "/" + m.EngineModel }
 
 // PublicRef is the provider/model reference shown to consumers.
-func (m Model) PublicRef() string { return m.Provider + "/" + m.EngineModel }
+func (m Model) PublicRef() string { return m.Provider + "/" + m.publicModel() }
+
+// publicModel is the public model name, defaulting to the engine model id.
+func (m Model) publicModel() string {
+	if m.PublicModel != "" {
+		return m.PublicModel
+	}
+	return m.EngineModel
+}
 
 var providers = map[string]Provider{
 	"free-tier": {
@@ -92,17 +101,17 @@ var models = []Model{
 	// Managed free tier. Internally these are served by the engine's own
 	// provider; publicly they are always "free-tier".
 	{Alias: "free-glm", Label: "GLM-5.3 Flash (free)", Provider: "free-tier",
-		EngineProvider: "opencode", EngineModel: "glm-5.3-flash-free", Context: 200000,
-		Limits: config.Limits{RPM: 20, TPM: 200000}},
+		EngineProvider: "opencode", EngineModel: "glm-5.3-flash-free", PublicModel: "glm-5.3-flash",
+		Context: 200000, Limits: config.Limits{RPM: 20, TPM: 200000}},
 	{Alias: "free-deepseek", Label: "DeepSeek V4.1 Flash (free)", Provider: "free-tier",
-		EngineProvider: "opencode", EngineModel: "deepseek-v4.1-flash-free", Context: 262144,
-		Limits: config.Limits{RPM: 20, TPM: 200000}},
+		EngineProvider: "opencode", EngineModel: "deepseek-v4.1-flash-free", PublicModel: "deepseek-v4.1-flash",
+		Context: 262144, Limits: config.Limits{RPM: 20, TPM: 200000}},
 	{Alias: "free-minimax", Label: "MiniMax M3.1 Flash (free)", Provider: "free-tier",
-		EngineProvider: "opencode", EngineModel: "minimax-m3.1-flash-free", Context: 200000,
-		Limits: config.Limits{RPM: 20, TPM: 200000}},
+		EngineProvider: "opencode", EngineModel: "minimax-m3.1-flash-free", PublicModel: "minimax-m3.1-flash",
+		Context: 200000, Limits: config.Limits{RPM: 20, TPM: 200000}},
 	{Alias: "free-longcat", Label: "LongCat 2.5 Preview (free)", Provider: "free-tier",
-		EngineProvider: "opencode", EngineModel: "longcat-2.5-preview-free", Context: 200000,
-		Limits: config.Limits{RPM: 20, TPM: 200000}},
+		EngineProvider: "opencode", EngineModel: "longcat-2.5-preview-free", PublicModel: "longcat-2.5-preview",
+		Context: 200000, Limits: config.Limits{RPM: 20, TPM: 200000}},
 
 	// SiliconFlow
 	{Alias: "qwen-coder-30b", Label: "Qwen3 Coder 30B", Provider: "siliconflow",
@@ -167,15 +176,29 @@ func Models() []Model {
 }
 
 // Resolve maps an alias, a public ref or an internal ref to a model entry.
+// Variant suffixes (#low/#high/...) are ignored for lookup.
 func Resolve(name string) (Model, bool) {
-	name = strings.TrimSpace(name)
+	return resolveBase(splitVariant(strings.TrimSpace(name)))
+}
+
+// resolveBase matches a model by alias, engine ref, public ref, public model
+// name or engine model id.
+func resolveBase(name string) (Model, bool) {
 	for _, m := range models {
 		if name == m.Alias || name == m.Ref() || name == m.PublicRef() ||
-			name == m.EngineModel {
+			name == m.Provider+"/"+m.EngineModel || name == m.EngineModel {
 			return m, true
 		}
 	}
 	return Model{}, false
+}
+
+// splitVariant removes an optional #variant suffix from a model reference.
+func splitVariant(ref string) string {
+	if i := strings.Index(ref, "#"); i >= 0 {
+		return ref[:i]
+	}
+	return ref
 }
 
 // Available reports whether a model can run with the current environment.
@@ -206,31 +229,43 @@ func AvailableModels() []Model {
 	return out
 }
 
-// ProviderForRef resolves the provider that owns an internal model reference.
+// ProviderForRef resolves the provider that owns a model reference. Variant
+// suffixes are ignored so short aliases such as free-glm#low resolve too.
 func ProviderForRef(ref string) (Provider, bool) {
-	id := ref
+	base := splitVariant(ref)
+	id := base
 	if i := strings.Index(id, "/"); i > 0 {
 		id = id[:i]
 	}
 	if id == "opencode" {
 		id = "free-tier"
 	}
-	return GetProvider(id)
+	if p, ok := GetProvider(id); ok {
+		return p, true
+	}
+	if m, ok := resolveBase(base); ok {
+		return GetProvider(m.Provider)
+	}
+	return Provider{}, false
 }
 
-// ModelForRef returns the registry entry matching an internal reference.
+// ModelForRef returns the registry entry matching a model reference.
 // Variant suffixes (#low/#high/...) are ignored for lookup.
 func ModelForRef(ref string) (Model, bool) {
-	base := ref
-	if i := strings.Index(base, "#"); i >= 0 {
-		base = base[:i]
+	return resolveBase(splitVariant(ref))
+}
+
+// EngineRef maps any accepted reference (alias, public ref or provider/model)
+// to the reference understood by the embedded engine, preserving the optional
+// #variant suffix. Unknown references are returned unchanged.
+func EngineRef(ref string) string {
+	base := splitVariant(ref)
+	variant := ref[len(base):]
+	m, ok := resolveBase(base)
+	if !ok {
+		return ref
 	}
-	for _, m := range models {
-		if m.Ref() == base {
-			return m, true
-		}
-	}
-	return Model{}, false
+	return m.EngineProvider + "/" + m.EngineModel + variant
 }
 
 // PublicName maps an internal model reference to its public alias. Unknown

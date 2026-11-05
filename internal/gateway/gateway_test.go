@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"compress/gzip"
 	"fmt"
 	"io"
 	"net/http"
@@ -234,5 +235,35 @@ func TestGatewayDetectsTruncation(t *testing.T) {
 	do(t, s, `{"model":"m","messages":[{"role":"user","content":"x"}]}`, nil)
 	if s.Capped() != 1 || s.Truncated() != 1 {
 		t.Fatalf("capped=%d truncated=%d", s.Capped(), s.Truncated())
+	}
+}
+
+func TestGatewayDecompressesGzipStream(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Content-Encoding", "gzip")
+		zw := gzip.NewWriter(w)
+		fl := w.(http.Flusher)
+		fmt.Fprint(zw, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2}}\n\n")
+		zw.Flush()
+		fl.Flush()
+		fmt.Fprint(zw, "data: [DONE]\n\n")
+		zw.Close()
+	}))
+	defer up.Close()
+
+	s, lim := testServer(t, up.URL, 10)
+	resp := do(t, s, `{"model":"m","stream":true,"messages":[{"role":"user","content":"x"}]}`,
+		map[string]string{"accept-encoding": "gzip"})
+	body, _ := io.ReadAll(resp.Body)
+	if got := resp.Header.Get("Content-Encoding"); got != "" {
+		t.Fatalf("content-encoding leaked: %q", got)
+	}
+	if !strings.Contains(string(body), "data: [DONE]") || !strings.Contains(string(body), `"content":"hi"`) {
+		t.Fatalf("gzip stream not decoded: %q", body)
+	}
+	win := lim.Snapshot()["prov/m"]
+	if win == nil || len(win.Tokens) != 1 || win.Tokens[0].Tokens != 7 {
+		t.Fatalf("gzip stream usage not applied: %+v", win)
 	}
 }

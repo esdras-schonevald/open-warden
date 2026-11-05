@@ -7,6 +7,7 @@ package gateway
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -208,9 +209,8 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "upstream_error", "could not build upstream request")
 		return
 	}
-	copyHeaders(req.Header, r.Header)
+	copyRequestHeaders(req.Header, r.Header)
 	req.Header.Del("x-warden-gateway")
-	req.Header.Del("Content-Length")
 	req.ContentLength = int64(len(body))
 	if req.Header.Get("Authorization") == "" {
 		for _, env := range prov.Env {
@@ -228,17 +228,22 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	copyHeaders(w.Header(), resp.Header)
-	w.Header().Del("Content-Length")
-	w.Header().Del("Content-Encoding")
+	upstreamBody, closeUpstream, err := decodedBody(resp)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "upstream_error", "could not decode upstream response")
+		return
+	}
+	defer closeUpstream()
+
+	copyResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 
 	var actual Tokens
 	hitLimit := false
 	if stream || strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
-		actual, hitLimit = s.copyStream(w, resp.Body)
+		actual, hitLimit = s.copyStream(w, upstreamBody)
 	} else {
-		raw, _ := io.ReadAll(resp.Body)
+		raw, _ := io.ReadAll(upstreamBody)
 		w.Write(raw)
 		if t, ok := extractUsage(raw); ok {
 			actual = t
@@ -572,16 +577,46 @@ var hopHeaders = map[string]bool{
 	"upgrade":             true,
 }
 
-func copyHeaders(dst, src http.Header) {
+func copyRequestHeaders(dst, src http.Header) {
 	for k, vv := range src {
 		lk := strings.ToLower(k)
-		if hopHeaders[lk] || lk == "host" || lk == "content-length" {
+		// Drop hop-by-hop headers and let net/http negotiate and transparently
+		// decompress the upstream response on its own: forwarding the caller's
+		// Accept-Encoding would hand us encoded bytes we would have to decode,
+		// and DeepSeek (unlike SiliconFlow) answers SSE streams with gzip.
+		if hopHeaders[lk] || lk == "host" || lk == "content-length" || lk == "accept-encoding" {
 			continue
 		}
 		for _, v := range vv {
 			dst.Add(k, v)
 		}
 	}
+}
+
+func copyResponseHeaders(dst, src http.Header) {
+	for k, vv := range src {
+		lk := strings.ToLower(k)
+		if hopHeaders[lk] || lk == "content-length" || lk == "content-encoding" {
+			continue
+		}
+		for _, v := range vv {
+			dst.Add(k, v)
+		}
+	}
+}
+
+// decodedBody returns the upstream body as plain bytes. net/http already
+// decompresses responses it negotiated itself; the gzip branch covers upstreams
+// that compress regardless of the request headers.
+func decodedBody(resp *http.Response) (io.Reader, func(), error) {
+	if !strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
+		return resp.Body, func() {}, nil
+	}
+	zr, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	return zr, func() { _ = zr.Close() }, nil
 }
 
 func writeError(w http.ResponseWriter, status int, kind, msg string) {
