@@ -257,7 +257,7 @@ func (r *Runner) Run(ctx context.Context, opts Options) (*report.Run, error) {
 		ID:          engine.NewSessionID(),
 		Agent:       firstNonEmpty(opts.Agent, "default"),
 		Started:     time.Now().UTC(),
-		Model:       chain[0],
+		Model:       registry.PublicName(chain[0]),
 		Budget:      budget,
 		EconomyMode: r.Cfg.Economy.Mode,
 		Status:      "running",
@@ -330,7 +330,7 @@ func (r *Runner) Run(ctx context.Context, opts Options) (*report.Run, error) {
 		}
 		pol := engine.SubagentPolicy{
 			Enabled: r.subagentEnabled(),
-			Model:   subModel,
+			Model:   registry.EngineRef(subModel),
 		}
 		env, cleanup, err := engine.PrepareConfig(engine.ConfigOptions{
 			Subagents: pol,
@@ -361,7 +361,7 @@ func (r *Runner) Run(ctx context.Context, opts Options) (*report.Run, error) {
 		res, class := engine.Run(runCtx, engine.Options{
 			Binary:      r.Cfg.EngineBin,
 			Workdir:     workdir,
-			Model:       model,
+			Model:       registry.EngineRef(model),
 			SessionID:   sessionID,
 			Prompt:      prompt,
 			AutoApprove: r.Cfg.Run.Auto(),

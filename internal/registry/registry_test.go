@@ -104,3 +104,34 @@ func TestPriceAndLimits(t *testing.T) {
 		t.Fatalf("limits: %+v", l)
 	}
 }
+
+func TestFreeTierRefsAndVariants(t *testing.T) {
+	m, ok := Resolve("free-tier/glm-5.3-flash#low")
+	if !ok || m.Alias != "free-glm" {
+		t.Fatalf("free-tier ref with variant: %+v %v", m, ok)
+	}
+	if m.PublicRef() != "free-tier/glm-5.3-flash" {
+		t.Fatalf("public ref: %s", m.PublicRef())
+	}
+	if got := EngineRef("free-tier/glm-5.3-flash#low"); got != "opencode/glm-5.3-flash-free#low" {
+		t.Fatalf("engine ref: %s", got)
+	}
+	if got := EngineRef("free-tier/deepseek-v4.1-flash"); got != "opencode/deepseek-v4.1-flash-free" {
+		t.Fatalf("free deepseek engine ref: %s", got)
+	}
+	if p, ok := ProviderForRef("free-glm#low"); !ok || p.Protocol != Free {
+		t.Fatalf("alias variant provider: %+v %v", p, ok)
+	}
+	if _, ok := ModelForRef("free-tier/glm-5.3-flash#max"); !ok {
+		t.Fatal("ModelForRef should resolve free-tier refs with variants")
+	}
+	if got := EngineRef("siliconflow/zai-org/GLM-5.3-Flash#high"); got != "siliconflow/zai-org/GLM-5.3-Flash#high" {
+		t.Fatalf("paid engine ref: %s", got)
+	}
+	if got := EngineRef("deepseek/deepseek-flash#none"); got != "deepseek/deepseek-flash#none" {
+		t.Fatalf("deepseek engine ref: %s", got)
+	}
+	if got := EngineRef("free-glm#low"); got != "opencode/glm-5.3-flash-free#low" {
+		t.Fatalf("alias engine ref: %s", got)
+	}
+}
