@@ -34,10 +34,11 @@ type Provider struct {
 type Model struct {
 	Alias          string
 	Label          string
-	Provider       string // public provider id (free-tier for managed models)
-	EngineProvider string // engine provider id (internal)
-	EngineModel    string // upstream model id (internal)
-	PublicModel    string // optional public model name (defaults to EngineModel)
+	Provider       string   // public provider id (free-tier for managed models)
+	EngineProvider string   // engine provider id (internal)
+	EngineModel    string   // upstream model id (internal)
+	PublicModel    string   // optional public model name (defaults to EngineModel)
+	PublicAliases  []string // optional extra public names (e.g. legacy refs)
 	Context        int
 	Price          config.Pricing
 	Limits         config.Limits
@@ -104,8 +105,9 @@ var models = []Model{
 		EngineProvider: "opencode", EngineModel: "glm-5.3-flash-free", PublicModel: "glm-5.3-flash",
 		Context: 200000, Limits: config.Limits{RPM: 20, TPM: 200000}},
 	{Alias: "free-deepseek", Label: "DeepSeek V4.1 Flash (free)", Provider: "free-tier",
-		EngineProvider: "opencode", EngineModel: "deepseek-v4.1-flash-free", PublicModel: "deepseek-v4.1-flash",
-		Context: 262144, Limits: config.Limits{RPM: 20, TPM: 200000}},
+		EngineProvider: "opencode", EngineModel: "deepseek-v4.1-flash-free", PublicModel: "deepseek-flash",
+		PublicAliases: []string{"deepseek-v4.1-flash"},
+		Context:       262144, Limits: config.Limits{RPM: 20, TPM: 200000}},
 	{Alias: "free-minimax", Label: "MiniMax M3.1 Flash (free)", Provider: "free-tier",
 		EngineProvider: "opencode", EngineModel: "minimax-m3.1-flash-free", PublicModel: "minimax-m3.1-flash",
 		Context: 200000, Limits: config.Limits{RPM: 20, TPM: 200000}},
@@ -188,6 +190,11 @@ func resolveBase(name string) (Model, bool) {
 		if name == m.Alias || name == m.Ref() || name == m.PublicRef() ||
 			name == m.Provider+"/"+m.EngineModel || name == m.EngineModel {
 			return m, true
+		}
+		for _, alias := range m.PublicAliases {
+			if name == alias || name == m.Provider+"/"+alias {
+				return m, true
+			}
 		}
 	}
 	return Model{}, false

@@ -131,6 +131,12 @@ func TestFreeTierRefsAndVariants(t *testing.T) {
 	if got := EngineRef("deepseek/deepseek-flash#none"); got != "deepseek/deepseek-flash#none" {
 		t.Fatalf("deepseek engine ref: %s", got)
 	}
+	if got := EngineRef("free-tier/deepseek-flash#none"); got != "opencode/deepseek-v4.1-flash-free#none" {
+		t.Fatalf("free deepseek alias engine ref: %s", got)
+	}
+	if _, ok := Resolve("free-tier/deepseek-v4.1-flash#none"); !ok {
+		t.Fatal("legacy free deepseek ref must keep resolving")
+	}
 	if got := EngineRef("free-glm#low"); got != "opencode/glm-5.3-flash-free#low" {
 		t.Fatalf("alias engine ref: %s", got)
 	}

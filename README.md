@@ -340,7 +340,8 @@ The application ships with this provider set:
 map to the engine's own provider; that name never appears in `models`,
 `providers`, reports or errors. They can also be referenced as
 `free-tier/<model>` (for example `free-tier/glm-5.3-flash` or
-`free-tier/deepseek-v4.1-flash`), with an optional variant suffix.
+`free-tier/deepseek-flash`; the legacy `free-tier/deepseek-v4.1-flash` keeps
+working), with an optional variant suffix.
 
 Every model has application-defined context, price and rate limits. The
 list is deliberately curated; use `open-warden models --all` to see everything
